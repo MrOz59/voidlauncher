@@ -38,6 +38,8 @@ export type StoreCommentsContext = {
   pageCount?: number
   /** The form is rendered for accounts that may comment, and for nobody else. */
   canPost: boolean
+  /** The page's login token distinguishes a signed-in account from a guest. */
+  signedIn: boolean
   /** The name the form would post under. */
   author?: string
 }
@@ -359,6 +361,7 @@ function moscowMoment(day: CalendarDay, hours: number, minutes: number): string 
 /** "КОММЕНТАРИЕВ: 12" under the article, which counts the whole thread. */
 const TOTAL_LABEL = /(?:комментари\w*|comments?)\s*:\s*(\d+)/i
 const SKIN_VARIABLE = /dle_skin\s*=\s*'([\w.-]+)'/
+const LOGIN_HASH_VARIABLE = /dle_login_hash\s*=\s*(['"])([^'"]*)\1/
 
 /**
  * Where in the thread this markup sits.
@@ -397,9 +400,8 @@ function parseNavigation($: cheerio.CheerioAPI): { currentPage?: number; pageCou
 
 /**
  * What the page says about the thread as a whole, and about what this account
- * may do with it. Whether an account can comment is the page's answer, not a
- * guess from a cookie: the site renders the form for accounts that may post and
- * a prompt to sign in for everyone else, including groups it has muted.
+ * may do with it. A missing form alone does not mean the account is signed
+ * out: the site can omit it for a signed-in account too.
  */
 export function parseCommentsContext(html: string): StoreCommentsContext {
   const $ = cheerio.load(html)
@@ -414,6 +416,7 @@ export function parseCommentsContext(html: string): StoreCommentsContext {
     total: Number.isFinite(total) ? total : undefined,
     ...parseNavigation($),
     canPost: form.length > 0 && form.find('textarea[name="comments"]').length > 0,
+    signedIn: Boolean(LOGIN_HASH_VARIABLE.exec(html)?.[2]),
     author: cleanText(form.find('input[name="name"]').attr('value')) || undefined
   }
 }

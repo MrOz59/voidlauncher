@@ -129,8 +129,9 @@ function pruneDiskCache(dir: string) {
   }
 }
 
-function writeCache(key: string, entry: CacheEntry) {
+function writeCache(key: string, entry: CacheEntry, persist: boolean) {
   rememberCache(key, entry)
+  if (!persist) return
   try {
     const dir = cacheDirectory()
     const file = path.join(dir, `${key}.json`)
@@ -149,7 +150,7 @@ function staleValue(entry: CacheEntry | null, staleFor: number): string | null {
 
 export async function fetchStoreHtml(url: string, options?: { force?: boolean }): Promise<string> {
   const target = new URL(url, STORE_HOME_URL).toString()
-  if (!isOnlineFixHost(new URL(target).hostname)) {
+  if (new URL(target).protocol !== 'https:' || !isOnlineFixHost(new URL(target).hostname)) {
     throw new Error(`Refusing to fetch a host outside the store: ${target}`)
   }
 
@@ -189,6 +190,7 @@ export async function fetchStoreHtml(url: string, options?: { force?: boolean })
       // Session.fetch (not net.fetch) so the store's cookies ride along.
       const response = await storeSession().fetch(target, {
         signal: controller.signal,
+        credentials: 'include',
         headers: { Accept: 'text/html,application/xhtml+xml' }
       })
 
@@ -201,8 +203,12 @@ export async function fetchStoreHtml(url: string, options?: { force?: boolean })
         throw new StoreRequestError('store-http-error', `${response.status} ${response.statusText}`)
       }
 
+      const finalUrl = new URL(response.url || target)
+      if (finalUrl.protocol !== 'https:' || !isOnlineFixHost(finalUrl.hostname)) {
+        throw new StoreRequestError('store-unavailable', 'Store redirected to an untrusted host')
+      }
       const html = decodeBody(Buffer.from(await response.arrayBuffer()), response.headers.get('content-type'))
-      writeCache(key, { url: target, html, fetchedAt: Date.now() })
+      writeCache(key, { url: target, html, fetchedAt: Date.now() }, scope === 'guest')
       return html
     } catch (err: any) {
       if (stale) {
@@ -225,17 +231,16 @@ export async function fetchStoreHtml(url: string, options?: { force?: boolean })
 }
 
 /**
- * A request that is not a catalogue page: DLE's own AJAX endpoints, which
- * answer per interaction and must never be cached. Same session, same rate
- * gate and same charset decode as the pages, so the store still talks to the
- * site with one voice.
+ * An uncached store request. Comment threads use a full document so the form
+ * reflects the current login; DLE's comment endpoints use AJAX. Both share
+ * the store session, request gate and charset decoding.
  */
 export async function requestStoreText(
   url: string,
-  options?: { method?: 'GET' | 'POST'; body?: string; referer?: string }
+  options?: { method?: 'GET' | 'POST'; body?: string; referer?: string; document?: boolean }
 ): Promise<string> {
   const target = new URL(url, STORE_HOME_URL).toString()
-  if (!isOnlineFixHost(new URL(target).hostname)) {
+  if (new URL(target).protocol !== 'https:' || !isOnlineFixHost(new URL(target).hostname)) {
     throw new StoreRequestError('store-unavailable', `Refusing to fetch a host outside the store: ${target}`)
   }
 
@@ -255,10 +260,12 @@ export async function requestStoreText(
       method: options?.method || 'GET',
       body: options?.body,
       signal: controller.signal,
+      credentials: 'include',
+      cache: 'no-store',
       headers: {
-        Accept: 'application/json, text/html, */*',
-        // The endpoints are the ones the site's own scripts call.
-        'X-Requested-With': 'XMLHttpRequest',
+        Accept: options?.document ? 'text/html,application/xhtml+xml' : 'application/json, text/html, */*',
+        // A full article is a normal navigation; only the comment endpoints are AJAX.
+        ...(!options?.document ? { 'X-Requested-With': 'XMLHttpRequest' } : {}),
         ...(options?.body ? { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' } : {}),
         ...(options?.referer ? { Referer: options.referer } : {})
       }
@@ -271,6 +278,11 @@ export async function requestStoreText(
 
     if (!response.ok) {
       throw new StoreRequestError('store-http-error', `${response.status} ${response.statusText}`)
+    }
+
+    const finalUrl = new URL(response.url || target)
+    if (finalUrl.protocol !== 'https:' || !isOnlineFixHost(finalUrl.hostname)) {
+      throw new StoreRequestError('store-unavailable', 'Store redirected to an untrusted host')
     }
 
     return decodeBody(Buffer.from(await response.arrayBuffer()), response.headers.get('content-type'))
@@ -350,6 +362,7 @@ export async function getStoreGame(url: string, options?: { force?: boolean }): 
  * (where the test script reads from); in a packaged build it goes to userData.
  */
 export async function captureStoreFixture(url: string, name?: string): Promise<{ path: string; bytes: number }> {
+  if (await cacheScope() !== 'guest') throw new Error('Sign out before capturing store fixtures')
   const html = await fetchStoreHtml(url, { force: true })
 
   const safeName = String(name || '')

@@ -5,16 +5,6 @@
 import { app } from 'electron'
 import fs from 'fs'
 
-// Windows workaround: some environments show a white screen unless Chromium sandbox is disabled.
-// Default to disabling sandbox on Windows builds; allow opting back in via OF_ENABLE_SANDBOX=1.
-if (process.platform === 'win32') {
-  const enableSandbox = String(process.env.OF_ENABLE_SANDBOX || '').trim() === '1'
-  if (!enableSandbox) {
-    console.warn('[Sandbox] Windows: disabling sandbox (OF_ENABLE_SANDBOX=1 to re-enable)')
-    app.commandLine.appendSwitch('no-sandbox')
-  }
-}
-
 // Configure Linux sandbox EARLY - before app is ready
 // This must happen before Chromium initializes
 if (process.platform === 'linux') {
@@ -75,17 +65,19 @@ if (typeof global.File === 'undefined') {
   }
 }
 
-import { BrowserWindow, dialog, ipcMain, session, shell, nativeImage, Tray, Menu, type IpcMainInvokeEvent } from 'electron'
+import { BrowserWindow, dialog, ipcMain as rawIpcMain, session, shell, nativeImage, Tray, Menu, type IpcMainInvokeEvent } from 'electron'
+import { trustedIpcMain as ipcMain, setTrustedIpcWindowProvider, isDevelopmentMode, isTrustedRendererUrl, isTrustedIpcSender } from './ipc/trustedIpc.js'
 import os from 'os'
 import path from 'path'
-import { pathToFileURL } from 'url'
-import { importCookies, exportCookies } from './cookieManager.js'
+import { fileURLToPath, pathToFileURL } from 'url'
+import { migrateLegacyCookies } from './cookieManager.js'
 import { fetchGameUpdateInfo, fetchUserProfile, scrapeGameInfo, UNSUPPORTED_MICROSOFT_STORE_ERROR } from './scraper.js'
 import { downloadFile, downloadTorrent } from './downloader.js'
 import { addOrUpdateGame, updateGameVersion, getSetting, getActiveDownloads, getDownloadByUrl, getCompletedDownloads, getDownloadById, markGameInstalled, setSetting, getAllGames, updateGameInfo, deleteGame, deleteDownload, getGame, getGameByGameId, extractGameIdFromUrl, updateDownloadProgress, updateDownloadStatus, updateDownloadInstallPath, setGameFavorite, toggleGameFavorite, updateGamePlayTime } from './db.js'
 import { shouldBlockRequest } from './easylist-filters.js'
 import { initializeStoreAdBlocker } from './storeAdBlocker.js'
 import { registerStoreImageProtocol, registerStoreImageScheme } from './store/imageProxy.js'
+import { clearStoreCache } from './store/catalog.js'
 import { startGameDownload, pauseDownloadByTorrentId, resumeDownloadByTorrentId, cancelDownloadByTorrentId, parseVersionFromName, processUpdateExtraction, readOnlineFixIni, writeOnlineFixIni, normalizeGameInstallDir, reconcileDownloadState, hasExistingGameInstall } from './downloadManager.js'
 import axios from 'axios'
 import { resolveTorrentFileUrl, deriveTitleFromTorrentUrl } from './torrentResolver.js'
@@ -494,7 +486,7 @@ async function pumpUpdateQueue() {
 
 // Dev-only watchdog to confirm event-loop stalls (helps pinpoint freezing sources).
 try {
-  const isDev = process.env.NODE_ENV === 'development' || !!require('electron-is-dev')
+  const isDev = isDevelopmentMode()
   if (isDev) {
     const h = monitorEventLoopDelay({ resolution: 20 })
     h.enable()
@@ -1053,6 +1045,20 @@ const ipcContext: IpcContext = {
   notifyGameReadyAfterInstall
 }
 
+// The renderer window is the only process allowed to invoke launcher actions.
+setTrustedIpcWindowProvider(() => mainWindow)
+
+rawIpcMain.on('get-store-webview-preload-url', (event) => {
+  if (!isTrustedIpcSender(event as IpcMainInvokeEvent)) {
+    event.returnValue = ''
+    return
+  }
+  const preloadDirectory = isDevelopmentMode()
+    ? path.join(__dirname, '../../dist-preload')
+    : __dirname
+  event.returnValue = pathToFileURL(path.join(preloadDirectory, 'storeWebviewPreload.js')).toString()
+})
+
 // Register all modular IPC handlers
 registerAllIpcHandlers(ipcContext)
 
@@ -1137,7 +1143,7 @@ async function handleExternalDownload(url: string) {
 }
 
 async function createMainWindow() {
-  const preloadPath = process.env.NODE_ENV === 'development' || require('electron-is-dev')
+  const preloadPath = isDevelopmentMode()
     ? path.join(__dirname, '../../dist-preload/preload.js')
     : path.join(__dirname, 'preload.js')
 
@@ -1155,9 +1161,40 @@ async function createMainWindow() {
       preload: preloadPath,
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
       webviewTag: true // Enable webview tag for embedded browser
     }
+  })
+
+  mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    if (params.partition !== TORRENT_PARTITION || !isAllowedWebviewUrl(params.src)) {
+      event.preventDefault()
+      return
+    }
+    const expectedPreload = isDevelopmentMode()
+      ? path.join(__dirname, '../../dist-preload/storeWebviewPreload.js')
+      : path.join(__dirname, 'storeWebviewPreload.js')
+    const requestedPreload = String(params.preload || webPreferences.preload || '')
+    if (requestedPreload) {
+      let normalizedPreload = requestedPreload
+      try {
+        if (normalizedPreload.startsWith('file:')) normalizedPreload = fileURLToPath(normalizedPreload)
+      } catch {
+        event.preventDefault()
+        return
+      }
+      if (path.resolve(normalizedPreload) !== path.resolve(expectedPreload)) {
+        event.preventDefault()
+        return
+      }
+      webPreferences.preload = expectedPreload
+    } else {
+      delete webPreferences.preload
+    }
+    webPreferences.nodeIntegration = false
+    webPreferences.contextIsolation = true
+    webPreferences.sandbox = true
+    webPreferences.webSecurity = true
   })
 
   // Force window to show and focus (helps with Gamescope)
@@ -1178,7 +1215,7 @@ async function createMainWindow() {
     if (level >= 2) console.log('[Renderer Console]', message)
   })
 
-  if (process.env.NODE_ENV === 'development' || require('electron-is-dev')) {
+  if (isDevelopmentMode()) {
     mainWindow.loadURL('http://localhost:5173')
     mainWindow.webContents.openDevTools() // Open DevTools in development
   } else {
@@ -1213,7 +1250,7 @@ async function createAuthWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
       partition: TORRENT_PARTITION // Use same partition as webview!
     }
   })
@@ -1221,18 +1258,8 @@ async function createAuthWindow() {
   console.log('[Auth] Opening store window with partition:', TORRENT_PARTITION)
   authWin.loadURL('https://online-fix.me/')
 
-  authWin.on('close', async () => {
-    console.log('[Auth] Auth window closed, checking for cookies...')
-    // Get cookies from the torrent partition session
-    const ses = session.fromPartition(TORRENT_PARTITION)
-    const cookies = await ses.cookies.get({ url: 'https://online-fix.me' })
-    console.log('[Auth] Found cookies after login:', cookies.map(c => c.name))
-    mainWindow?.webContents.send('cookies-saved', cookies)
-    try {
-      await exportCookies('https://online-fix.me')
-    } catch (err) {
-      console.warn('[Auth] Failed to persist cookies', err)
-    }
+  authWin.on('closed', () => {
+    mainWindow?.webContents.send('cookies-saved')
   })
 }
 
@@ -1253,8 +1280,13 @@ app.on('before-quit', () => {
 app.whenReady().then(async () => {
   registerStoreImageProtocol()
 
+  session.defaultSession.setPermissionCheckHandler(() => false)
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+
   ensureLinuxDesktopEntry()
-  await importCookies('https://online-fix.me')
+  await migrateLegacyCookies()
+  // Older builds wrote authenticated store HTML (including form tokens) to disk.
+  clearStoreCache()
 
   // Create system tray
   createTray()
@@ -1294,6 +1326,11 @@ app.whenReady().then(async () => {
 
   const webviewSession = session.fromPartition(TORRENT_PARTITION)
   initializeStoreAdBlocker(webviewSession, getSetting('store_ad_block_mode'))
+  webviewSession.on('will-download', (event, item) => {
+    event.preventDefault()
+    const url = item.getURL()
+    if (isTorrentListing(url)) void handleExternalDownload(url)
+  })
 
   // Block popunders at BrowserWindow level (but allow normal new windows)
   app.on('web-contents-created', (_event, contents) => {
@@ -1326,7 +1363,15 @@ app.whenReady().then(async () => {
               width: Math.max(options.width ?? 0, 500),
               height: Math.max(options.height ?? 0, 700),
               parent: mainWindow ?? undefined,
-              autoHideMenuBar: true
+              autoHideMenuBar: true,
+              webPreferences: {
+                ...options.webPreferences,
+                nodeIntegration: false,
+                contextIsolation: true,
+                sandbox: true,
+                webSecurity: true,
+                partition: TORRENT_PARTITION
+              }
             })
             // Google refuses to sign in from a browser that announces itself as Electron.
             popup.webContents.setUserAgent(
@@ -1354,6 +1399,14 @@ app.whenReady().then(async () => {
 
     // Block navigation only to known popup/redirect URLs
     contents.on('will-navigate', (event, navigationUrl) => {
+      if (contents === mainWindow?.webContents) {
+        if (!isTrustedRendererUrl(navigationUrl)) event.preventDefault()
+        return
+      }
+      if (contents.session === webviewSession && !isAllowedWebviewUrl(navigationUrl)) {
+        event.preventDefault()
+        return
+      }
       // Always allow torrent links
       if (isTorrentListing(navigationUrl)) {
         console.log('[PopupBlocker] Allowing torrent navigation:', navigationUrl.substring(0, 80))
@@ -1375,6 +1428,14 @@ app.whenReady().then(async () => {
 
     // Block redirects only to known popup/redirect URLs
     contents.on('will-redirect', (event, navigationUrl) => {
+      if (contents === mainWindow?.webContents) {
+        if (!isTrustedRendererUrl(navigationUrl)) event.preventDefault()
+        return
+      }
+      if (contents.session === webviewSession && !isAllowedWebviewUrl(navigationUrl)) {
+        event.preventDefault()
+        return
+      }
       // Always allow torrent links
       if (isTorrentListing(navigationUrl)) {
         console.log('[PopupBlocker] Allowing torrent redirect:', navigationUrl.substring(0, 80))
@@ -1445,7 +1506,7 @@ app.whenReady().then(async () => {
     return true
   })
 
-  // NOTE: Auth handlers (get-user-profile, get-cookie-header, export-cookies, clear-cookies,
+  // NOTE: Auth handlers (get-user-profile, get-store-login-status, clear-cookies,
   // check-game-version, fetch-game-update-info) moved to src/main/ipc/authHandlers.ts
 
   // NOTE: Download handlers (download-http, download-torrent, pause-download, resume-download,

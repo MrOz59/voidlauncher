@@ -1,6 +1,4 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import path from 'path'
-import { pathToFileURL } from 'url'
 
 type DownloadProgressPayload = {
   url?: string
@@ -67,15 +65,14 @@ type LauncherTaskStatusPayload = {
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  getStoreWebviewPreloadUrl: () => pathToFileURL(path.join(__dirname, 'storeWebviewPreload.js')).toString(),
+  getStoreWebviewPreloadUrl: () => ipcRenderer.sendSync('get-store-webview-preload-url'),
   openAuthWindow: () => ipcRenderer.invoke('open-auth-window'),
   checkGameVersion: (url: string) => ipcRenderer.invoke('check-game-version', url),
-  getCookieHeader: (url: string) => ipcRenderer.invoke('get-cookie-header', url),
-  exportCookies: (url?: string) => ipcRenderer.invoke('export-cookies', url),
+  getStoreLoginStatus: () => ipcRenderer.invoke('get-store-login-status'),
   clearCookies: () => ipcRenderer.invoke('clear-cookies'),
 
-  onCookiesSaved: (cb: (cookies: Electron.Cookie[]) => void) => {
-    const handler = (_event: IpcRendererEvent, cookies: Electron.Cookie[]) => cb(cookies)
+  onCookiesSaved: (cb: () => void) => {
+    const handler = () => cb()
     ipcRenderer.on('cookies-saved', handler)
     return () => ipcRenderer.removeListener('cookies-saved', handler)
   },

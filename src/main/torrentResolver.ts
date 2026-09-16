@@ -2,6 +2,7 @@ import axios from 'axios'
 import * as cheerio from 'cheerio'
 import path from 'path'
 import { session } from 'electron'
+import { isAllowedTorrentUrl } from '../shared/allowedHosts'
 
 function cookiesToHeader(cookies: Electron.Cookie[]) {
   return cookies.map((c) => `${c.name}=${c.value}`).join('; ')
@@ -14,6 +15,7 @@ export async function resolveTorrentFileUrl(listingUrl: string, partition = 'per
   console.log('[TorrentResolver] Resolving torrent from:', listingUrl)
 
   const base = new URL(listingUrl)
+  if (!isAllowedTorrentUrl(listingUrl)) throw new Error('Untrusted torrent listing URL')
   const ses = session.fromPartition(partition)
 
   // Get cookies from both the torrent domain and main domain
@@ -42,6 +44,7 @@ export async function resolveTorrentFileUrl(listingUrl: string, partition = 'per
   }
 
   const resp = await axios.get(listingUrl, {
+    maxRedirects: 0,
     headers: {
       Cookie: cookieHeader,
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -61,6 +64,7 @@ export async function resolveTorrentFileUrl(listingUrl: string, partition = 'per
   }
 
   const resolved = new URL(link, listingUrl).toString()
+  if (!isAllowedTorrentUrl(resolved)) throw new Error('Untrusted torrent file URL')
   console.log('[TorrentResolver] Resolved torrent URL:', resolved)
   return resolved
 }

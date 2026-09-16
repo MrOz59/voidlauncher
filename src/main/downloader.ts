@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import axios from 'axios'
 import * as cheerio from 'cheerio'
+import { isAllowedTorrentUrl } from '../shared/allowedHosts'
 
 export {
   downloadTorrent,
@@ -28,6 +29,7 @@ export async function downloadFile(
   onProgress?: (percent: number, details?: HttpDownloadProgress) => void,
   headers?: Record<string, string>
 ) {
+  if (headers?.Cookie && !isAllowedTorrentUrl(url)) throw new Error('Refusing to send store cookies to an untrusted URL')
   fs.mkdirSync(path.dirname(destPath), { recursive: true })
   const partialPath = `${destPath}.part`
   const startedAt = Date.now()
@@ -40,10 +42,10 @@ export async function downloadFile(
       responseType: 'stream',
       headers: headers || {},
       timeout: 30000,
-      maxRedirects: 5,
+      maxRedirects: headers?.Cookie ? 0 : 5,
       validateStatus: status => status >= 200 && status < 300
     })
-    const total = parseInt(res.headers['content-length'] || '0', 10)
+    const total = parseInt(String(res.headers['content-length'] || '0'), 10)
 
     writer = fs.createWriteStream(partialPath)
     let loaded = 0
@@ -89,10 +91,12 @@ export async function downloadFile(
  * Example URL: https://uploads.online-fix.me:2053/torrents/Ultimate%20Sheep%20Raccoon/
  */
 export async function downloadTorrentFromDirectory(directoryUrl: string, cookieHeader?: string): Promise<string> {
+  if (cookieHeader && !isAllowedTorrentUrl(directoryUrl)) throw new Error('Untrusted torrent listing URL')
   console.log('[Torrent Downloader] Scraping directory:', directoryUrl)
 
   // Fetch the directory listing HTML
   const response = await axios.get(directoryUrl, {
+    maxRedirects: cookieHeader ? 0 : 5,
     headers: cookieHeader ? { Cookie: cookieHeader } : {}
   })
 
@@ -116,6 +120,7 @@ export async function downloadTorrentFromDirectory(directoryUrl: string, cookieH
 
   // Construct full torrent URL
   const torrentUrl = new URL(torrentFileName, directoryUrl).toString()
+  if (!isAllowedTorrentUrl(torrentUrl)) throw new Error('Untrusted torrent file URL')
   console.log('[Torrent Downloader] Found torrent file:', torrentUrl)
 
   // Download .torrent file to temp directory

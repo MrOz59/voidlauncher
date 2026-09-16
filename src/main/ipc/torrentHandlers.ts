@@ -2,7 +2,8 @@
  * IPC Handlers for Torrent Downloads
  * These need to be registered separately because they depend on main.ts functions
  */
-import { ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { type IpcMainInvokeEvent } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import { scrapeGameInfo, UNSUPPORTED_MICROSOFT_STORE_ERROR } from '../scraper'
 import { startGameDownload, parseVersionFromName } from '../downloadManager'
 import { resolveTorrentFileUrl, deriveTitleFromTorrentUrl } from '../torrentResolver'

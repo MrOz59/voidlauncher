@@ -237,7 +237,7 @@ export default function StoreGameComments({ url }: { url: string }) {
       ) : (
         <div className="store-next-notice" role="note">
           <MessageSquare size={15} aria-hidden="true" />
-          <span>{t('storeNext.comments.signIn')}</span>
+          <span>{t(thread.signedIn ? 'storeNext.comments.unavailable' : 'storeNext.comments.signIn')}</span>
         </div>
       ))}
     </div>

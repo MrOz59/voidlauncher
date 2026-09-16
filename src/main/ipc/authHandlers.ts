@@ -1,9 +1,11 @@
 /**
  * IPC Handlers for Authentication and Cookies
  */
-import { ipcMain, session } from 'electron'
+import { session } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import { fetchUserProfile, fetchGameUpdateInfo } from '../scraper'
 import { updateGameInfo } from '../db'
+import { STORE_HOME_URL } from '../../shared/allowedHosts'
 import type { IpcContext, IpcHandlerRegistrar } from './types'
 
 const TORRENT_PARTITION = 'persist:online-fix'
@@ -18,29 +20,16 @@ export const registerAuthHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => {
     return { success: false, error: 'Perfil não encontrado', ...profile }
   })
 
-  ipcMain.handle('get-cookie-header', async (_event, url: string) => {
-    const cookieHeader = await import('../cookieManager').then(m => m.getCookieHeaderForUrl(url))
-    return cookieHeader
-  })
-
-  ipcMain.handle('export-cookies', async (_event, url?: string) => {
-    const cookies = await import('../cookieManager').then(m => m.exportCookies(url))
-    return cookies
+  ipcMain.handle('get-store-login-status', async () => {
+    const cookies = await session.fromPartition(TORRENT_PARTITION).cookies.get({ url: STORE_HOME_URL })
+    const names = new Set(cookies.filter((cookie) => cookie.value).map((cookie) => cookie.name.toLowerCase()))
+    return names.has('dle_user_id') && names.has('dle_password')
   })
 
   ipcMain.handle('clear-cookies', async () => {
     try {
       const cm = await import('../cookieManager')
       await cm.clearCookiesAndFile()
-
-      // Reset webview storage as well (best effort)
-      try {
-        await session.defaultSession.clearStorageData({ storages: ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage'] as any })
-      } catch {}
-      try {
-        const ses = session.fromPartition(TORRENT_PARTITION)
-        await ses.clearStorageData({ storages: ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage'] as any })
-      } catch {}
 
       ctx.getMainWindow()?.webContents.send('cookies-cleared')
       return { success: true }

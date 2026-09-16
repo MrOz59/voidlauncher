@@ -1,7 +1,8 @@
 /**
  * IPC Handlers for Achievements
  */
-import { ipcMain, dialog } from 'electron'
+import { dialog } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import fs from 'fs'
 import path from 'path'
 import { getAllGames, getSetting, setSetting, updateGameInfo } from '../db'

@@ -42,7 +42,7 @@ export function registerStoreImageScheme() {
   protocol.registerSchemesAsPrivileged([
     {
       scheme: SCHEME,
-      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true }
+      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
     }
   ])
 }
@@ -53,7 +53,8 @@ export function toStoreImageUrl(url: string | undefined | null): string | undefi
   if (!value) return undefined
 
   try {
-    if (!isOnlineFixHost(new URL(value).hostname)) return value
+    const parsed = new URL(value)
+    if (parsed.protocol !== 'https:' || !isOnlineFixHost(parsed.hostname)) return value
   } catch {
     return value
   }
@@ -67,7 +68,8 @@ function decodeTarget(requestUrl: string): string | null {
     if (!encoded) return null
 
     const decoded = Buffer.from(encoded, 'base64url').toString('utf8')
-    return isOnlineFixHost(new URL(decoded).hostname) ? decoded : null
+    const parsed = new URL(decoded)
+    return parsed.protocol === 'https:' && isOnlineFixHost(parsed.hostname) ? decoded : null
   } catch {
     return null
   }
@@ -179,6 +181,7 @@ async function fetchStoreImage(target: string): Promise<ImageCacheEntry> {
     try {
       const response = await session.fromPartition(STORE_PARTITION).fetch(target, {
         signal: controller.signal,
+        credentials: 'include',
         headers: { Referer: STORE_HOME_URL, Accept: 'image/avif,image/webp,image/*,*/*;q=0.8' }
       })
 

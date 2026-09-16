@@ -5,7 +5,7 @@ import type {
   StoreCommentPostResult,
   StoreCommentsThread
 } from '../../shared/storeComments'
-import { fetchStoreHtml, invalidateStorePage, requestStoreText } from './catalog'
+import { invalidateStorePage, requestStoreText } from './catalog'
 import { parseComments, parseCommentsContext } from './commentsParser'
 import { toStoreImageUrl } from './imageProxy'
 import { StoreRequestError } from './requestPolicy'
@@ -14,9 +14,8 @@ import { StoreRequestError } from './requestPolicy'
  * The comment thread of a game page, read and written through the site's own
  * endpoints.
  *
- * Opening a thread costs nothing: the article page already carries a page of it
- * — its newest one, which is the page a reader wants — and the game screen has
- * just fetched that page, so it comes from the same cache. Earlier pages come
+ * The article page carries the newest page of comments. Read it fresh so a
+ * cached guest copy cannot hide the form after sign-in. Earlier pages come
  * from DLE's comment endpoint, which returns the same markup as a small
  * fragment instead of the whole article again.
  *
@@ -84,7 +83,7 @@ export async function getStoreGameComments(options: {
   force?: boolean
 }): Promise<StoreCommentsThread> {
   const target = new URL(String(options.url || ''), STORE_HOME_URL).toString()
-  const html = await fetchStoreHtml(target, { force: options.force })
+  const html = await requestStoreText(target, { document: true })
   const context = parseCommentsContext(html)
 
   // What the article page carries is not page one: the site opens a thread on
@@ -113,6 +112,7 @@ export async function getStoreGameComments(options: {
     total,
     comments: comments.map(withProxiedImages),
     canPost: context.canPost,
+    signedIn: context.signedIn,
     author: context.author
   }
 }
@@ -165,12 +165,13 @@ export async function postStoreGameComment(options: { url: string; text: string 
     throw new StoreRequestError('store-comment-too-long', `A comment is limited to ${MAX_COMMENT_LENGTH} characters`)
   }
 
-  const html = await fetchStoreHtml(target)
+  const html = await requestStoreText(target, { document: true })
   const context = parseCommentsContext(html)
   const newsId = context.newsId || newsIdFromUrl(target)
 
   if (!context.canPost || !newsId) {
-    throw new StoreRequestError('store-comment-login-required', 'This account cannot comment on that page')
+    const code = context.signedIn ? 'store-comment-unavailable' : 'store-comment-login-required'
+    throw new StoreRequestError(code, 'The site does not offer a comment form for this account on that page')
   }
 
   // The same fields the site's own form sends, including the ones it leaves

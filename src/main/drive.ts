@@ -1,4 +1,4 @@
-import { app, shell } from 'electron'
+import { app, safeStorage, shell } from 'electron'
 import http from 'http'
 import url from 'url'
 import fs from 'fs'
@@ -8,20 +8,22 @@ import crypto from 'crypto'
 import db from './db.js'
 import { extractRealAppIdFromIniText } from './utils/onlinefixIni.js'
 import { driveRequest } from './driveRequest.js'
+import { extractZipWithPassword } from './zip.js'
 
 const REDIRECT_PORT = 42813
 const REDIRECT_URI = `http://127.0.0.1:${REDIRECT_PORT}/oauth2callback`
 const SCOPE = ['https://www.googleapis.com/auth/drive.file']
-const TOKEN_FILE = path.join(app.getPath('userData'), 'drive_token.json')
+const LEGACY_TOKEN_FILE = path.join(app.getPath('userData'), 'drive_token.json')
+function tokenFilePath(): string {
+  return path.join(app.getPath('userData'), 'drive_token.json')
+}
 const APP_FOLDER_NAME = 'OF-Client-Saves'
 
-// OAuth proxy server URL (from settings or default)
+const OAUTH_PROXY_URL = 'https://vpn.mroz.dev.br'
+
+// OAuth codes and refresh tokens must only be sent to the launcher's service.
 function getOAuthProxyUrl(): string {
-  try {
-    const row = db?.prepare('SELECT value FROM settings WHERE key = ?').get('lanControllerUrl') as { value: string } | undefined
-    if (row?.value) return row.value
-  } catch {}
-  return 'https://vpn.mroz.dev.br'
+  return OAUTH_PROXY_URL
 }
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
@@ -162,7 +164,7 @@ export async function authenticateWithDrive(): Promise<{ success: boolean; messa
       ...restTokenData,
       expiry_date: expires_in ? Date.now() + (expires_in * 1000) : undefined
     }
-    fs.writeFileSync(TOKEN_FILE, JSON.stringify(tokenData, null, 2))
+    saveToken(tokenData)
     console.log('[Drive] Token saved successfully')
     return { success: true }
   } catch (e: any) {
@@ -171,11 +173,47 @@ export async function authenticateWithDrive(): Promise<{ success: boolean; messa
   }
 }
 
-function safeReadJson(p: string): any | null {
+function canEncryptToken(): boolean {
+  if (!safeStorage.isEncryptionAvailable()) return false
+  return process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'
+}
+
+function saveToken(token: any): void {
+  const file = tokenFilePath()
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+  const encoded = Buffer.from(JSON.stringify(token), 'utf8')
+  const payload = canEncryptToken()
+    ? JSON.stringify({ version: 1, encrypted: true, data: safeStorage.encryptString(encoded.toString('utf8')).toString('base64') })
+    : encoded.toString('utf8')
+  const temporary = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`
   try {
-    if (!fs.existsSync(p)) return null
-    const raw = fs.readFileSync(p, 'utf-8')
-    return JSON.parse(raw)
+    fs.writeFileSync(temporary, payload, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    fs.renameSync(temporary, file)
+    fs.chmodSync(file, 0o600)
+  } finally {
+    try { fs.rmSync(temporary, { force: true }) } catch {}
+  }
+}
+
+function readToken(): any | null {
+  try {
+    const file = fs.existsSync(tokenFilePath()) ? tokenFilePath() : LEGACY_TOKEN_FILE
+    if (!fs.existsSync(file)) return null
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const token = raw?.encrypted === true && raw?.version === 1
+      ? JSON.parse(safeStorage.decryptString(Buffer.from(raw.data, 'base64')))
+      : raw
+    if (!token || typeof token !== 'object' || (!token.access_token && !token.refresh_token)) return null
+    if (file !== tokenFilePath() || raw?.encrypted !== true) {
+      try {
+        saveToken(token)
+        if (file !== tokenFilePath()) fs.rmSync(file, { force: true })
+      } catch (error) {
+        console.warn('[Drive] Could not migrate token file:', error)
+        try { fs.chmodSync(file, 0o600) } catch {}
+      }
+    }
+    return token
   } catch {
     return null
   }
@@ -221,7 +259,7 @@ function createProxyAuth(token: any) {
         currentToken = { ...currentToken, ...newToken }
         // Persist refreshed token
         try {
-          fs.writeFileSync(TOKEN_FILE, JSON.stringify(currentToken, null, 2))
+          saveToken(currentToken)
         } catch (err) {
           // Silence here shows up much later as an unexplained sign-out.
           console.warn('[Drive] Failed to persist refreshed token:', err)
@@ -239,7 +277,7 @@ function createProxyAuth(token: any) {
 }
 
 function loadOAuthClient(): { auth: any; drive: any } | null {
-  const token = safeReadJson(TOKEN_FILE)
+  const token = readToken()
 
   if (!token) return null
 
@@ -507,13 +545,12 @@ export function getCredentialsPath() {
 }
 
 export function getTokenPath() {
-  return TOKEN_FILE
+  return tokenFilePath()
 }
 
 export function isDriveConfigured(): boolean {
   try {
-    if (!fs.existsSync(TOKEN_FILE)) return false
-    const token = safeReadJson(TOKEN_FILE)
+    const token = readToken()
     if (!token) return false
     // Minimal sanity: access_token or refresh_token must exist
     return Boolean(token.access_token || token.refresh_token)
@@ -540,21 +577,13 @@ export async function openCredentialsFile(): Promise<{ success: boolean; message
 }
 
 export async function openTokenFile(): Promise<{ success: boolean; message?: string }> {
-  try {
-    if (!fs.existsSync(TOKEN_FILE)) return { success: false, message: 'Token não existe (autentique primeiro)' }
-    const r = await shell.openPath(TOKEN_FILE)
-    if (r) return { success: false, message: r }
-    return { success: true }
-  } catch (e: any) {
-    return { success: false, message: e?.message || String(e) }
-  }
+  return { success: false, message: 'O token é protegido e não pode ser aberto diretamente.' }
 }
 
 export function clearToken(): { success: boolean; message?: string } {
   try {
-    if (fs.existsSync(TOKEN_FILE)) {
-      fs.rmSync(TOKEN_FILE, { force: true })
-    }
+    fs.rmSync(tokenFilePath(), { force: true })
+    if (LEGACY_TOKEN_FILE !== tokenFilePath()) fs.rmSync(LEGACY_TOKEN_FILE, { force: true })
     return { success: true }
   } catch (e: any) {
     return { success: false, message: e?.message || String(e) }
@@ -754,17 +783,7 @@ async function zipFolderTo(zipFrom: string, zipTo: string): Promise<void> {
 }
 
 async function extractZipTo(zipPath: string, destDir: string): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  let extract: any
-  try {
-    extract = require('extract-zip')
-  } catch (e) {
-    throw new Error('Dependência ausente: extract-zip. Instale com `npm i extract-zip`.')
-  }
-  // Extraction must happen in the target directory.
-  // If the zip contains a root folder, this can be an issue; callers that need
-  // flattening should extract to a temporary directory first and then copy.
-  await extract(zipPath, { dir: destDir })
+  await extractZipWithPassword(zipPath, destDir)
 }
 
 // Backup local saves folder to Drive (zips folder then uploads)

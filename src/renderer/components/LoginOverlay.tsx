@@ -1,4 +1,5 @@
 import React from 'react'
+import type { WebviewTag } from 'electron'
 import { useI18n } from '../i18n'
 
 const STORE_PARTITION = 'persist:online-fix'
@@ -375,7 +376,7 @@ type Props = {
 
 export default function LoginOverlay({ open, onClose, onLoggedIn }: Props) {
   const { t } = useI18n()
-  const webviewRef = React.useRef<Electron.WebviewTag | null>(null)
+  const webviewRef = React.useRef<WebviewTag | null>(null)
   const [checking, setChecking] = React.useState(false)
   const [loginUser, setLoginUser] = React.useState('')
   const [loginPass, setLoginPass] = React.useState('')
@@ -446,11 +447,6 @@ export default function LoginOverlay({ open, onClose, onLoggedIn }: Props) {
     try {
       const res = await window.electronAPI.getUserProfile()
       if (res?.success) {
-        try {
-          await window.electronAPI.exportCookies('https://online-fix.me')
-        } catch {
-          // ignore
-        }
         handleLoggedIn()
       }
     } catch {
@@ -748,7 +744,7 @@ export default function LoginOverlay({ open, onClose, onLoggedIn }: Props) {
             partition={STORE_PARTITION}
             // @ts-expect-error - webview expects string attributes
             allowpopups="true"
-            webpreferences="contextIsolation=no, nodeIntegration=no, javascript=yes"
+            webpreferences="contextIsolation=yes, nodeIntegration=no, sandbox=yes, javascript=yes"
             className={`login-overlay__webview${showWebview ? ' login-overlay__webview--visible' : ''}`}
           />
 

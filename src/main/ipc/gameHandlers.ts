@@ -1,7 +1,8 @@
 /**
  * IPC Handlers for Game Management
  */
-import { ipcMain, dialog, shell, BrowserWindow, app, type OpenDialogOptions, type SaveDialogOptions } from 'electron'
+import { dialog, shell, BrowserWindow, app, type OpenDialogOptions, type SaveDialogOptions } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'

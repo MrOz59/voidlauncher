@@ -1,4 +1,5 @@
-import { ipcMain, app } from 'electron'
+import { app } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import { getSetting } from '../db'
 import { vpnControllerListPeers, vpnControllerListRooms } from '../vpnControllerClient'
 import { VpnSession, setActiveVpnSession } from '../vpnSession'

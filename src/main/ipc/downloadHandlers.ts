@@ -1,7 +1,8 @@
 /**
  * IPC Handlers for Downloads
  */
-import { ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { type IpcMainInvokeEvent } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import fs from 'fs'
 import path from 'path'
 import { downloadFile, downloadTorrent } from '../downloader'

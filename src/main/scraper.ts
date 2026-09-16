@@ -2,6 +2,7 @@ import axios from 'axios'
 import * as cheerio from 'cheerio'
 import { session } from 'electron'
 import { getCookieHeaderForUrl } from './cookieManager'
+import { isOnlineFixHost } from '../shared/allowedHosts'
 import { sanitizeVersionText } from './utils/versionUtils'
 
 export const UNSUPPORTED_MICROSOFT_STORE_ERROR =
@@ -313,6 +314,7 @@ export async function scrapeGameInfo(url: string): Promise<{ title: string | nul
     const cookieHeader = await getCookieHeaderForUrl(url)
 
     const resp = await axios.get(url, {
+      maxRedirects: 0,
       headers: {
         Cookie: cookieHeader,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -383,6 +385,7 @@ export async function fetchGameUpdateInfo(url: string): Promise<{ version: strin
   try {
     // Retrieve page with cookies to authorize
     const resp = await axios.get(url, {
+      maxRedirects: 0,
       headers: {
         Cookie: cookieHeader,
         'User-Agent': 'OF-Client/0.1'
@@ -422,8 +425,11 @@ function absolutize(href: string | null | undefined, base: string): string | nul
 
 async function fetchImageData(url: string, cookieHeader: string): Promise<string | null> {
   try {
+    const parsed = new URL(url)
+    const useStoreCookies = parsed.protocol === 'https:' && isOnlineFixHost(parsed.hostname)
     const resp = await axios.get(url, {
-      headers: { Cookie: cookieHeader, 'User-Agent': 'OF-Client/0.1' },
+      maxRedirects: 0,
+      headers: { ...(useStoreCookies ? { Cookie: cookieHeader } : {}), 'User-Agent': 'OF-Client/0.1' },
       responseType: 'arraybuffer'
     })
     const mime = resp.headers['content-type'] || 'image/jpeg'
@@ -440,6 +446,7 @@ export async function fetchUserProfile(): Promise<{ name: string | null; avatar:
     const url = 'https://online-fix.me/'
     const cookieHeader = await getCookieHeaderForUrl(url)
     const resp = await axios.get(url, {
+      maxRedirects: 0,
       headers: { Cookie: cookieHeader, 'User-Agent': 'OF-Client/0.1' },
       responseType: 'arraybuffer'
     })

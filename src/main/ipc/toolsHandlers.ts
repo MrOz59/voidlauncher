@@ -1,4 +1,5 @@
-import { ipcMain, app, BrowserWindow } from 'electron'
+import { app, BrowserWindow } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import fs from 'fs'
 import https from 'https'
 import os from 'os'

@@ -1,7 +1,7 @@
 /**
  * IPC handlers for the unified launcher task feed.
  */
-import { ipcMain } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import { getTaskQueueStatus } from '../taskManager'
 import type { IpcHandlerRegistrar } from './types'
 

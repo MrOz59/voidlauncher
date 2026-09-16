@@ -277,13 +277,19 @@ check(first?.number === 21, 'so the comments on it are not numbered from one', f
 check(context.newsId === '18237', 'reads the article id the comment endpoint needs', context.newsId)
 check(context.skin === 'FixLand', 'reads the template name that endpoint needs', context.skin)
 check(context.canPost === true, 'the form on the page means this account may post', context.canPost)
+check(context.signedIn === true, 'the page recognises the signed-in account', context.signedIn)
 check(context.author === 'MrOz', 'reads the name a comment would be posted under', context.author)
 
 // What a signed-out reader gets: the same thread, and no form anywhere on it.
-const guestHtml = commentsHtml.replace(/<form[^>]*id="dle-comments-form"[\s\S]*?<\/form>/, '')
+const noFormHtml = commentsHtml.replace(/<form[^>]*id="dle-comments-form"[\s\S]*?<\/form>/, '')
+const guestHtml = noFormHtml.replace(/(dle_login_hash\s*=\s*')[^']*'/, "$1'")
 const guestContext = parseCommentsContext(guestHtml)
 check(parseComments(guestHtml, GAME_URL).length === 3, 'a signed-out reader still gets the thread')
 check(guestContext.canPost === false, 'no form means this account may not post', guestContext.canPost)
+check(guestContext.signedIn === false, 'an empty login token identifies a guest', guestContext.signedIn)
+const noFormContext = parseCommentsContext(noFormHtml)
+check(noFormContext.canPost === false && noFormContext.signedIn === true,
+  'a signed-in account can also receive no comment form', noFormContext)
 
 // A thread that fits on one page has no pager, and that page is the first one.
 const onePage = parseCommentsContext(commentsHtml.replace(/<nav class="pagination[\s\S]*?<\/nav>/, ''))

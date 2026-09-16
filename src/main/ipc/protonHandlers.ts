@@ -1,7 +1,7 @@
 /**
  * IPC Handlers for Proton (Linux game compatibility layer)
  */
-import { ipcMain } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import { getGame, updateGameInfo, extractGameIdFromUrl } from '../db'
 import {
   isLinux,

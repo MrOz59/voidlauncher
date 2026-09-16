@@ -5,7 +5,8 @@
  * handlers back the new tab, which reads the same pages through the store
  * session and renders them natively.
  */
-import { ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { type IpcMainInvokeEvent } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import { captureStoreFixture, clearStoreCache, getStoreGame, getStoreListing } from '../store/catalog'
 import { getStoreGameComments, postStoreGameComment } from '../store/comments'
 import { clearStoreImageCache } from '../store/imageProxy'

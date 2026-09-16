@@ -49,6 +49,8 @@ export type StoreCommentsThread = {
   comments: StoreComment[]
   /** Whether this account may post, which is the page's answer, not a guess. */
   canPost: boolean
+  /** Whether the page recognises the account as signed in. */
+  signedIn: boolean
   /** The name a comment would be posted under. */
   author?: string
 }

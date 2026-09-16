@@ -52,7 +52,7 @@ export default function App() {
   })
 
   useEffect(() => {
-    // Check if user has cookies (is logged in)
+    // Check whether the store session has the site's login cookies.
     checkLoginStatus()
 
     try {
@@ -63,11 +63,8 @@ export default function App() {
     }
 
     // Listen for cookie updates
-    const off = window.electronAPI.onCookiesSaved((cookies) => {
-      if (cookies && cookies.length > 0) {
-        setIsLoggedIn(true)
-      }
-      // Keep renderer state in sync with persisted cookies
+    const off = window.electronAPI.onCookiesSaved(() => {
+      // Check the same partition that the store requests use.
       checkLoginStatus()
     })
 
@@ -123,8 +120,7 @@ export default function App() {
 
   const checkLoginStatus = async () => {
     try {
-      const cookies = await window.electronAPI.exportCookies('https://online-fix.me')
-      setIsLoggedIn(cookies && cookies.length > 0)
+      setIsLoggedIn(await window.electronAPI.getStoreLoginStatus())
     } catch (error) {
       console.error('Failed to check login status:', error)
     }

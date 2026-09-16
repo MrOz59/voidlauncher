@@ -1,7 +1,8 @@
 /**
  * IPC Handlers for Google Drive and Cloud Saves
  */
-import { ipcMain, shell } from 'electron'
+import { shell } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import fs from 'fs'
 import path from 'path'
 import * as drive from '../drive'

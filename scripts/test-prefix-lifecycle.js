@@ -94,7 +94,7 @@ function fixture(t) {
   const jobs = new Map()
   const { registerProtonHandlers } = load('ipc/protonHandlers.js', {
     fs: mocks.fs,
-    electron: { ipcMain: { handle: (name, fn) => handlers.set(name, fn) } },
+    './trustedIpc': { trustedIpcMain: { handle: (name, fn) => handlers.set(name, fn) } },
     '../db': { getGame: () => game, updateGameInfo: (_, patch) => Object.assign(game, patch), extractGameIdFromUrl: () => '123' },
     '../protonManager': manager
   }, env)

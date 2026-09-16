@@ -1,7 +1,8 @@
 /**
  * IPC Handlers for Game Launch/Stop
  */
-import { app, dialog, ipcMain } from 'electron'
+import { app, dialog } from 'electron'
+import { trustedIpcMain as ipcMain } from './trustedIpc'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'

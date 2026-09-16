@@ -65,11 +65,11 @@ export function isLoginPopupUrl(raw?: string | null): boolean {
 export function isAllowedWebviewUrl(raw?: string | null): boolean {
   const url = String(raw || '').trim()
   if (!url) return false
-  if (url.startsWith('about:')) return true
+  if (url === 'about:blank') return true
 
   try {
     const parsed = new URL(url)
-    if (!/^https?:$/.test(parsed.protocol)) return false
+    if (parsed.protocol !== 'https:') return false
     return isAllowedWebviewHost(parsed.hostname)
   } catch {
     return false
@@ -82,7 +82,7 @@ export function isAllowedTorrentUrl(raw?: string | null): boolean {
 
   try {
     const parsed = new URL(url)
-    if (!/^https?:$/.test(parsed.protocol)) return false
+    if (parsed.protocol !== 'https:') return false
     if (!isOnlineFixHost(parsed.hostname)) return false
     return parsed.pathname.includes('/torrents/') || parsed.pathname.endsWith('.torrent')
   } catch {

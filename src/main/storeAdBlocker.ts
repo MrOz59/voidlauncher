@@ -100,6 +100,7 @@ export async function configureStoreAdBlocker(modeInput: any) {
 
 export function initializeStoreAdBlocker(ses: Session, modeInput: any) {
   storeSession = ses
+  storeSession.setPermissionCheckHandler(() => false)
   storeSession.setPermissionRequestHandler((_wc, _permission, callback) => {
     callback(false)
   })

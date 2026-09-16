@@ -1,6 +1,5 @@
 /// <reference types="vite/client" />
 
-import type { Cookie } from 'electron'
 import type { StoreComment, StoreCommentsThread } from '../shared/storeComments'
 
 type DownloadResult = { success: boolean; error?: string }
@@ -113,8 +112,9 @@ declare global {
     electronAPI: {
       getStoreWebviewPreloadUrl: () => string
       openAuthWindow: () => Promise<boolean>
+      getStoreLoginStatus: () => Promise<boolean>
       checkGameVersion: (url: string) => Promise<VersionResult>
-      onCookiesSaved: (cb: (cookies: Cookie[]) => void) => (() => void)
+      onCookiesSaved: (cb: () => void) => (() => void)
       onCookiesCleared: (cb: () => void) => (() => void)
       clearCookies: () => Promise<{ success: boolean; error?: string }>
       downloadHttp: (url: string, dest: string) => Promise<DownloadResult>
@@ -381,8 +381,6 @@ declare global {
       queueGameUpdates: (gameUrls: string[]) => Promise<{ success: boolean; queuedAdded?: number; error?: string }>
       clearUpdateQueue: () => Promise<{ success: boolean; error?: string }>
       getUpdateQueueStatus: () => Promise<{ success: boolean; status?: { running: boolean; queued: number; currentGameUrl?: string | null; lastError?: string | null; updatedAt: number }; error?: string }>
-      getCookieHeader: (url: string) => Promise<string>
-      exportCookies: (url?: string) => Promise<any>
       deleteDownload: (downloadId: number) => Promise<{ success: boolean; error?: string }>
       onGameVersionUpdate: (cb: (data: { url: string; latest?: string }) => void) => (() => void)
       onUpdateQueueStatus: (cb: (data: { running: boolean; queued: number; currentGameUrl?: string | null; lastError?: string | null; updatedAt: number }) => void) => (() => void)
