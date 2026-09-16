@@ -2,7 +2,7 @@
 
 Desktop launcher and updater for games from **online-fix.me**.
 
-[![Latest release](https://img.shields.io/github/v/release/MrOz59/of-client-launcher?label=stable)](https://github.com/MrOz59/of-client-launcher/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/MrOz59/voidlauncher?label=stable)](https://github.com/MrOz59/voidlauncher/releases/latest)
 
 > Status: active desktop launcher. Some features depend on host tools, bundled sidecars, and the current OnlineFix page structure.
 

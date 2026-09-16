@@ -2,10 +2,10 @@
   "name": "voidlauncher",
   "version": "0.4.0",
   "description": "Desktop launcher and updater for online-fix.me games",
-  "homepage": "https://github.com/MrOz59/of-client-launcher",
+  "homepage": "https://github.com/MrOz59/voidlauncher",
   "repository": {
     "type": "git",
-    "url": "https://github.com/MrOz59/of-client-launcher.git"
+    "url": "https://github.com/MrOz59/voidlauncher.git"
   },
   "main": "dist/main/main.js",
   "scripts": {
@@ -52,7 +52,16 @@
     "fetch:easytier": "node scripts/fetch-easytier.js",
     "test:vpn": "tsc -p tsconfig.build.json && node --test scripts/test-vpn.js scripts/test-vpn-controller.mjs"
   },
-  "keywords": [],
+  "keywords": [
+    "game-launcher",
+    "electron",
+    "linux",
+    "windows",
+    "proton",
+    "wine",
+    "online-fix",
+    "cloud-saves"
+  ],
   "author": "",
   "license": "MIT",
   "devDependencies": {

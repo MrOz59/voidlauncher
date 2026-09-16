@@ -25,6 +25,17 @@ const { spawnSync } = require('child_process')
 
 const VERSION = (process.env.LUDUSAVI_VERSION || '0.30.0').replace(/^v/, '')
 const REPO = String(process.env.LUDUSAVI_REPO || 'mtkennerly/ludusavi')
+const GITHUB_TOKEN = String(process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '').trim()
+
+function githubApiHeaders(url) {
+  const isGitHubApi = new URL(url).hostname === 'api.github.com'
+  return {
+    'User-Agent': 'voidlauncher-fetch-ludusavi',
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    ...(GITHUB_TOKEN && isGitHubApi ? { Authorization: `Bearer ${GITHUB_TOKEN}` } : {})
+  }
+}
 
 function mkdirp(p) {
   fs.mkdirSync(p, { recursive: true })
@@ -42,10 +53,7 @@ function httpGetJson(url) {
       url,
       {
         method: 'GET',
-        headers: {
-          'User-Agent': 'of-client-launcher-fetch-ludusavi',
-          'Accept': 'application/vnd.github+json'
-        }
+        headers: githubApiHeaders(url)
       },
       (res) => {
         let data = ''
@@ -76,7 +84,7 @@ function httpDownload(url, destFile) {
       {
         method: 'GET',
         headers: {
-          'User-Agent': 'of-client-launcher-fetch-ludusavi'
+          'User-Agent': 'voidlauncher-fetch-ludusavi'
         }
       },
       (res) => {

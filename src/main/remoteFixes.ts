@@ -14,7 +14,7 @@ import path from 'path'
  * is checked against the shape a fix id may have, and the caller validates
  * every field through the same normaliser an imported file goes through.
  */
-const FIXES_BASE = 'https://raw.githubusercontent.com/MrOz59/of-client-launcher/main/fixes'
+const FIXES_BASE = 'https://raw.githubusercontent.com/MrOz59/voidlauncher/main/fixes'
 const INDEX_TTL_MS = 6 * 60 * 60 * 1000
 const REQUEST_TIMEOUT_MS = 12000
 const MAX_BYTES = 256 * 1024

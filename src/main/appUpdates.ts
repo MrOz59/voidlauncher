@@ -4,7 +4,7 @@ import fs from 'fs'
 import https from 'https'
 import path from 'path'
 
-const DEFAULT_REPO = 'MrOz59/of-client-launcher'
+const DEFAULT_REPO = 'MrOz59/voidlauncher'
 const CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000
 
 export type LauncherUpdateStatus = {

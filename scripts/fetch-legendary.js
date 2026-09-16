@@ -13,6 +13,17 @@ const { spawnSync } = require('child_process')
 const REPO = String(process.env.LEGENDARY_REPO || 'legendary-gl/legendary')
 const VERSION = String(process.env.LEGENDARY_VERSION || 'latest').replace(/^v/, '')
 const TIMEOUT_MS = Number(process.env.LEGENDARY_TIMEOUT_MS || 120000)
+const GITHUB_TOKEN = String(process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '').trim()
+
+function githubApiHeaders(url) {
+  const isGitHubApi = new URL(url).hostname === 'api.github.com'
+  return {
+    'User-Agent': 'voidlauncher-legendary-fetch',
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    ...(GITHUB_TOKEN && isGitHubApi ? { Authorization: `Bearer ${GITHUB_TOKEN}` } : {})
+  }
+}
 
 function httpGetJson(url, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -20,9 +31,7 @@ function httpGetJson(url, timeoutMs) {
       url,
       {
         method: 'GET',
-        headers: {
-          'User-Agent': 'voidlauncher-legendary-fetch'
-        }
+        headers: githubApiHeaders(url)
       },
       (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
