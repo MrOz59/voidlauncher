@@ -37,6 +37,8 @@ jobs:
         run: node --test scripts/test-save-sync-policy.js
       - name: Complete cloud save bundles
         run: node --test scripts/test-save-bundles.js
+      - name: Nested game save directory round trip
+        run: node --test scripts/test-nested-saves.js
 
   windows-smoke:
     name: Windows app + toast compile
@@ -51,6 +53,6 @@ jobs:
       - run: npm ci
       - run: npm run build:app
       - run: npm run typecheck
-      - run: node --test scripts/test-install-finalization.js scripts/test-backup-integrity.js scripts/test-save-sync-policy.js scripts/test-save-bundles.js
+      - run: node --test scripts/test-install-finalization.js scripts/test-backup-integrity.js scripts/test-save-sync-policy.js scripts/test-save-bundles.js scripts/test-nested-saves.js
       - name: Compile native Windows toast (verifies border fix)
         run: npm run build:notification-overlay:windows
