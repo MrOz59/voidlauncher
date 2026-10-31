@@ -330,23 +330,45 @@ async function ensureGameSavesFolder(driveClient: any, gameKey: string): Promise
   return created.data.id || parentId
 }
 
-export async function listSaves(realAppId?: string): Promise<{ id: string; name: string; modifiedTime?: string }[] | { error: string }> {
+export async function listSaves(realAppId?: string): Promise<{ id: string; name: string; modifiedTime?: string; appProperties?: Record<string, string> }[] | { error: string }> {
   const client = loadOAuthClient()
   if (!client) return { error: 'Missing credentials or token. Authenticate first.' }
   try {
-    const folderId = await ensureAppFolder(client.drive)
-    // If realAppId provided, filter by filename prefix to only include that game's backups
-    const prefix = realAppId ? `ofsave_${String(realAppId)}_` : null
-    const qParts = [`'${escapeDriveQueryValue(folderId)}' in parents`, 'trashed=false']
-    if (prefix) qParts.push(`name contains '${escapeDriveQueryValue(prefix)}'`)
-    const q = qParts.join(' and ')
-    const res = await client.drive.files.list({
-      q,
-      fields: 'files(id, name, modifiedTime, appProperties)'
-    })
-    return (res.data.files || []).map((f: any) => ({ id: f.id, name: f.name, modifiedTime: f.modifiedTime, appProperties: f.appProperties })) as any
+    const root = await ensureAppFolder(client.drive)
+    const query = async (parentId: string): Promise<any[]> => {
+      const found: any[] = []
+      let pageToken: string | undefined
+      do {
+        const res = await client.drive.files.list({
+          q: `'${escapeDriveQueryValue(parentId)}' in parents and trashed=false`,
+          fields: 'nextPageToken,files(id,name,modifiedTime,mimeType,appProperties)',
+          pageSize: 1000,
+          ...(pageToken ? { pageToken } : {})
+        })
+        found.push(...(res.data.files || []))
+        pageToken = res.data.nextPageToken || undefined
+      } while (pageToken)
+      return found
+    }
+    const atRoot = await query(root)
+    const folders = atRoot.filter(x => x.mimeType === 'application/vnd.google-apps.folder' && String(x.name || '').startsWith('game_'))
+    const perGame = await Promise.all(folders.map(folder => query(folder.id)))
+    const files = [...atRoot, ...perGame.flat()].filter(x => x.mimeType !== 'application/vnd.google-apps.folder')
+    const id = String(realAppId || '').trim()
+    const relevant = id ? files.filter(f =>
+      String(f.appProperties?.voidSteamAppId || '') === id ||
+      f.name.startsWith(`ofsave_${id}_`) ||
+      f.name.startsWith(`ludusavi_steam_${id}_`) ||
+      f.name.startsWith(`heuristic_steam_${id}_`)
+    ) : files
+    return relevant.map(f => ({
+      id: f.id, name: f.name, modifiedTime: f.modifiedTime,
+      appProperties: f.appProperties
+    })).sort((x, y) =>
+      (parseDriveModifiedTimeMs(y.modifiedTime) || 0) -
+      (parseDriveModifiedTimeMs(x.modifiedTime) || 0))
   } catch (e: any) {
-    return { error: e.message || String(e) }
+    return { error: e?.message || String(e) }
   }
 }
 
