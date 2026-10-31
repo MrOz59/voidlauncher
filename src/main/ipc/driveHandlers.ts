@@ -135,8 +135,9 @@ export const registerDriveHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => {
         ctx.sendCloudSavesStatus({ at: Date.now(), gameUrl: gameUrl || undefined, gameKey, stage: 'restore', level: 'info', message: msg })
       }
 
-      // Fallback: legacy OnlineFix folder sync
-      return await drive.syncSavesOnPlayStart(options || {})
+      // A skipped/newer/conflicted snapshot must NOT be restored again through
+      // the legacy path, which cannot compare authoritative save timestamps.
+      return restoreRes
     } catch (e: any) {
       return { success: false, message: e?.message || String(e) }
     }
@@ -211,7 +212,7 @@ export const registerDriveHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => {
         console.log('[DRIVE-SYNC] Dados do jogo resolvidos (RealAppId agora é steam_app_id ou undefined):', options)
       }
 
-      // Prefer Ludusavi-based sync; fallback to legacy OnlineFix sync.
+      // Versioned cloud-save sync is authoritative. No legacy overwrite fallback.
       try {
         const gameUrl = typeof arg === 'string' ? arg : String(options?.gameUrl || '').trim()
         const game = gameUrl ? (getGame(gameUrl) as any) : null
@@ -227,9 +228,7 @@ export const registerDriveHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => {
         console.warn('[DRIVE-SYNC] Ludusavi sync failed; falling back:', e)
       }
 
-      const legacy = await drive.syncSavesOnPlayStart(options || {})
-      console.log('[DRIVE-SYNC] Resultado final (legacy):', legacy)
-      return legacy
+      return { success: false, message: 'Cloud Saves não conseguiu sincronizar. Saves locais preservados.' }
     } catch (e: any) {
       console.error('[DRIVE-SYNC] Erro inesperado na chamada principal:', e)
       return { success: false, message: e?.message || String(e) }
