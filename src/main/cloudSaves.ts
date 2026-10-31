@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, dialog } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { execSync } from 'child_process'
@@ -16,6 +16,8 @@ import {
 import { detectSaveLocationsAsync, DetectedSaveLocation } from './saveDetector'
 import { getGame } from './db'
 import { isValidBackupZip, safeRemoteZipFilename } from './backupIntegrity'
+import { chooseSafeSaveAction } from './saveSyncPolicy'
+import { makeSaveBundle, unpackSaveBundle, hasLudusaviMapping } from './saveBundles'
 
 function slugify(text: string) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
@@ -200,19 +202,77 @@ async function getLocalSaveStateMsViaPreview(opts: {
   return findNewestTimestampMsFromJson(res.json)
 }
 
-async function getNewestRemoteForGameKey(gameKey: string): Promise<{ id: string; name: string; modifiedTime?: string } | null> {
-  // Prefer new canonical prefix; fall back to legacy prefix.
-  const canonical = await drive.getNewestRemoteFileByPrefix(remotePrefixForGame(gameKey))
-  if (canonical?.name.startsWith(remotePrefixForGame(gameKey))) return canonical
-  // Earlier releases used a prefix that overlaps __main_ and __conflict_.
-  const legacy = await drive.listFilesByNamePrefix(remoteLegacyPrefixForGame(gameKey))
-  if (!Array.isArray(legacy)) return null
-  return legacy
-    .filter(f => f.name.startsWith(remoteLegacyPrefixForGame(gameKey)) &&
-      !f.name.startsWith(remoteConflictPrefixForGame(gameKey)) &&
-      !f.name.startsWith(remotePrefixForGame(gameKey)))
-    .sort((a, b) => (parseDriveModifiedTimeMs(b.modifiedTime) || 0) - (parseDriveModifiedTimeMs(a.modifiedTime) || 0))[0] || null
+type RemoteCloudSave = {
+  id: string
+  name: string
+  modifiedTime?: string
+  appProperties?: Record<string, string>
 }
+
+async function getNewestRemoteForGameKey(gameKey: string): Promise<RemoteCloudSave | null> {
+  // v2 objects carry exact game identity and format metadata. List across
+  // per-game folders, and never select conflict copies for automatic restore.
+  const indexed = await drive.listFilesByAppProperties({ voidGameKey: gameKey, voidRole: 'main' })
+  if (Array.isArray(indexed) && indexed.length) {
+    const sorted = indexed
+      .filter(f => safeRemoteZipFilename(f.name))
+      .sort((a, b) => {
+        const aTime = Number(a.appProperties?.voidSaveMtime || 0)
+        const bTime = Number(b.appProperties?.voidSaveMtime || 0)
+        if (aTime > 0 && bTime > 0 && aTime !== bTime) return bTime - aTime
+        return (parseDriveModifiedTimeMs(b.modifiedTime) || 0) - (parseDriveModifiedTimeMs(a.modifiedTime) || 0)
+      })
+    if (sorted.length) return sorted[0]
+  }
+  // Compatibility: legacy files live in the app root and have no mapping
+  // metadata. They must remain visible but cannot be auto-restored blindly.
+  const canonical = await drive.getNewestRemoteFileByPrefix(remotePrefixForGame(gameKey))
+  const legacy = await drive.listFilesByNamePrefix(remoteLegacyPrefixForGame(gameKey))
+  const heuristic = await drive.getNewestRemoteFileByPrefix(remoteHeuristicPrefixForGame(gameKey))
+  const candidates: RemoteCloudSave[] = [
+    ...(canonical?.name.startsWith(remotePrefixForGame(gameKey)) ? [canonical] : []),
+    ...(heuristic?.name.startsWith(remoteHeuristicPrefixForGame(gameKey)) ? [heuristic] : []),
+    ...(Array.isArray(legacy) ? legacy.filter(f =>
+      f.name.startsWith(remoteLegacyPrefixForGame(gameKey)) &&
+      !f.name.startsWith(remotePrefixForGame(gameKey)) &&
+      !f.name.startsWith(remoteConflictPrefixForGame(gameKey))
+    ) : [])
+  ].filter(f => safeRemoteZipFilename(f.name))
+  return candidates.sort((a, b) =>
+    (parseDriveModifiedTimeMs(b.modifiedTime) || 0) - (parseDriveModifiedTimeMs(a.modifiedTime) || 0))[0] || null
+}
+
+type LocalSaveSnapshot = {
+  exists: boolean
+  modifiedMs: number | null
+  locations: DetectedSaveLocation[]
+}
+
+async function inspectLocalSaves(
+  opts: CloudSaveSyncOptions, configDir: string, backupDir: string,
+  gameName: string | null, winePrefix: string | undefined
+): Promise<LocalSaveSnapshot> {
+  const savedGame = opts.gameUrl ? (getGame(opts.gameUrl) as any) : null
+  const locations = await detectSaveLocationsAsync({
+    winePrefix,
+    gameInstallPath: opts.gameInstallPath || savedGame?.install_path || undefined,
+    gameTitle: opts.title || savedGame?.title || undefined,
+    steamAppId: opts.steamAppId || savedGame?.steam_app_id || undefined
+  })
+  const real = locations.filter(loc => (loc.saveFileCount || 0) > 0)
+  let modifiedMs: number | null = null
+  for (const loc of real) {
+    const at = loc.lastModified?.getTime()
+    if (at != null && Number.isFinite(at)) modifiedMs = Math.max(modifiedMs || 0, at)
+  }
+  // Preview is only a fallback when path heuristics can't identify local data.
+  if (!real.length && gameName) {
+    const preview = await getLocalSaveStateMsViaPreview({ configDir, backupDir, gameName, winePrefix })
+    if (preview != null) return { exists: true, modifiedMs: preview, locations }
+  }
+  return { exists: real.length > 0, modifiedMs, locations }
+}
+
 
 /**
  * Create a zip backup of detected save locations using system zip command
@@ -256,6 +316,7 @@ async function createHeuristicBackup(
     const manifest = {
       created: new Date().toISOString(),
       gameTitle,
+      platform: process.platform,
       locations: validLocations.map(l => ({
         path: l.path,
         type: l.type,
@@ -304,6 +365,11 @@ async function createHeuristicBackup(
 
       // Add manifest
       archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' })
+      archive.append(JSON.stringify({
+        version: 2, format: 'heuristic-bundle',
+        platform: process.platform, gameTitle,
+        gameKey: computeCloudSavesGameKey({ title: gameTitle })
+      }, null, 2), { name: '.void-save-bundle.json' })
 
       // Add each save location as a directory
       for (let i = 0; i < validLocations.length; i++) {
