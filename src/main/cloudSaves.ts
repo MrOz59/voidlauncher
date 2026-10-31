@@ -242,6 +242,102 @@ async function getNewestRemoteForGameKey(gameKey: string): Promise<RemoteCloudSa
     (parseDriveModifiedTimeMs(b.modifiedTime) || 0) - (parseDriveModifiedTimeMs(a.modifiedTime) || 0))[0] || null
 }
 
+export type GameSaveBackup = {
+  id: string
+  name: string
+  modifiedTime?: string
+  saveModifiedMs: number | null
+  format: string
+  role: 'main' | 'conflict' | 'legacy'
+  platform?: string
+  restorable: boolean
+}
+
+export type GameSaveOverview = {
+  gameKey: string
+  connected: boolean
+  local: { exists: boolean; modifiedMs: number | null; locations: Array<{
+    path: string; type: string; confidence: string; fileCount: number; modifiedMs: number | null
+  }> }
+  backups: GameSaveBackup[]
+  recommendation: 'restore' | 'local' | 'ask' | 'none'
+}
+
+async function listGameRemoteBackups(gameKey: string): Promise<GameSaveBackup[]> {
+  const results = await drive.listSaves()
+  if (!Array.isArray(results)) throw new Error(results.error || 'Falha ao listar os backups no Drive.')
+  const legacyPrefixes = [
+    remotePrefixForGame(gameKey),
+    remoteLegacyPrefixForGame(gameKey),
+    remoteConflictPrefixForGame(gameKey),
+    remoteHeuristicPrefixForGame(gameKey),
+    `heuristic_${gameKey}__conflict_`
+  ]
+  const seen = new Set<string>()
+  return results.filter(f => {
+    if (!f.id || seen.has(f.id) || !safeRemoteZipFilename(f.name)) return false
+    const same = f.appProperties?.voidGameKey === gameKey ||
+      (!f.appProperties?.voidGameKey && legacyPrefixes.some(prefix => f.name.startsWith(prefix)))
+    if (same) seen.add(f.id)
+    return same
+  }).map(f => {
+    const props = f.appProperties || {}
+    const format = String(props.voidFormat || 'legacy')
+    const role: GameSaveBackup['role'] = props.voidRole === 'conflict' ? 'conflict'
+      : props.voidRole === 'main' ? 'main' : 'legacy'
+    const timestamp = Number(props.voidSaveMtime || 0)
+    const platform = props.voidPlatform || undefined
+    const restorable = props.voidSchema === '2' && props.voidGameKey === gameKey &&
+      (format === 'ludusavi-bundle' || format === 'heuristic-bundle') &&
+      platform === process.platform
+    return {
+      id: f.id, name: f.name, modifiedTime: f.modifiedTime,
+      saveModifiedMs: Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null,
+      format, role, platform, restorable
+    }
+  }).sort((a, b) => (b.saveModifiedMs || Date.parse(b.modifiedTime || '') || 0) -
+    (a.saveModifiedMs || Date.parse(a.modifiedTime || '') || 0))
+}
+
+/** Called only on user request, not for every card in the library grid. */
+export async function getGameSaveOverview(opts: CloudSaveSyncOptions): Promise<GameSaveOverview> {
+  const gameKey = computeCloudSavesGameKey(opts)
+  const configDir = ludusaviConfigDir()
+  const backupDir = ludusaviBackupDirForGame(gameKey)
+  const winePrefix = guessWinePrefixFromCompatData(opts.protonPrefix)
+  const ludusaviBinary = await resolveLudusaviBinary()
+  const gameName = ludusaviBinary ? await resolveLudusaviGameName({
+    steamId: opts.steamAppId, title: opts.title
+  }) : null
+  const local = await inspectLocalSaves(opts, configDir, backupDir, gameName, winePrefix)
+  const connected = drive.isCloudSavesEnabled()
+  const backups = connected ? await listGameRemoteBackups(gameKey) : []
+  const newest = backups.find(b => b.restorable && b.role === 'main')
+  return {
+    gameKey, connected,
+    local: {
+      exists: local.exists,
+      modifiedMs: local.modifiedMs,
+      locations: local.locations.map(loc => ({
+        path: loc.path, type: loc.type, confidence: loc.confidence,
+        fileCount: loc.saveFileCount || 0,
+        modifiedMs: loc.lastModified?.getTime() || null
+      }))
+    },
+    backups,
+    recommendation: chooseSafeSaveAction(
+      { exists: local.exists, modifiedMs: local.modifiedMs },
+      { exists: !!newest, modifiedMs: newest?.saveModifiedMs || null }
+    )
+  }
+}
+
+/** Only allow a selected file that still belongs to this exact game. */
+export async function getGameBackupById(opts: CloudSaveSyncOptions, fileId: string): Promise<GameSaveBackup | null> {
+  const backups = await listGameRemoteBackups(computeCloudSavesGameKey(opts))
+  return backups.find(b => b.id === fileId) || null
+}
+
 /**
  * Some games store saves as extensionless files or proprietary .db/.profile
  * files. When PCGamingWiki identifies the actual save directory, treat a
@@ -477,12 +573,27 @@ function restoreHeuristicSnapshot(
  * saves exist, or after an explicit user choice and an independent recovery
  * snapshot. Old backups without bundled metadata are never auto-restored.
  */
-export async function restoreCloudSavesBeforeLaunch(opts: CloudSaveSyncOptions): Promise<{ success: boolean; message?: string; skipped?: boolean }> {
+export async function restoreCloudSavesBeforeLaunch(
+  opts: CloudSaveSyncOptions,
+  selectedRemoteId?: string
+): Promise<{ success: boolean; message?: string; skipped?: boolean }> {
   if (!drive.isCloudSavesEnabled()) {
     return { success: true, skipped: true, message: 'Cloud Saves desabilitado.' }
   }
   const gameKey = computeCloudSavesGameKey(opts)
-  const remote = await getNewestRemoteForGameKey(gameKey)
+  let remote = await getNewestRemoteForGameKey(gameKey)
+  if (selectedRemoteId) {
+    const selected = await getGameBackupById(opts, selectedRemoteId)
+    if (!selected || !selected.restorable) {
+      return { success: false, message: 'Backup não pertence a este jogo ou não pode ser restaurado neste sistema.' }
+    }
+    remote = { id: selected.id, name: selected.name, modifiedTime: selected.modifiedTime,
+      appProperties: {
+        voidGameKey: gameKey, voidRole: selected.role, voidFormat: selected.format,
+        voidPlatform: selected.platform || '', voidSchema: '2',
+        voidSaveMtime: selected.saveModifiedMs ? String(selected.saveModifiedMs) : ''
+      } }
+  }
   if (!remote) return { success: true, skipped: true, message: 'Nenhum backup remoto encontrado.' }
 
   const configDir = ludusaviConfigDir()
@@ -495,7 +606,7 @@ export async function restoreCloudSavesBeforeLaunch(opts: CloudSaveSyncOptions):
   const props = remote.appProperties || {}
   const remoteTimestamp = Number(props.voidSaveMtime)
   const remoteSaveMs = Number.isFinite(remoteTimestamp) && remoteTimestamp > 0 ? remoteTimestamp : null
-  const action = chooseSafeSaveAction(
+  const action = selectedRemoteId && local.exists ? 'ask' : chooseSafeSaveAction(
     { exists: local.exists, modifiedMs: local.modifiedMs },
     { exists: true, modifiedMs: remoteSaveMs }
   )
