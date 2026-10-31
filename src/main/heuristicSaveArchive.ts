@@ -123,6 +123,7 @@ export function restoreSaveDirectoryContents(archiveRoot: string, destinationRoo
     fs.cpSync(path.join(archiveRoot, entry.name), path.join(destinationRoot, entry.name), {
       recursive: true,
       force: true,
+      preserveTimestamps: true,
       errorOnExist: false
     })
   }
