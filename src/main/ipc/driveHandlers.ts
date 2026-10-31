@@ -168,6 +168,7 @@ export const registerDriveHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => {
   ipcMain.handle('cloud-saves-game-backup', async (_event, gameUrl: string) => {
     try {
       const options = gameSaveOptions(gameUrl)
+      if (ctx.runningGames.has(gameUrl)) return { success: false, error: 'Feche o jogo antes de criar um backup consistente.' }
       if (!drive.isCloudSavesEnabled()) return { success: false, error: 'Conecte o Drive e ative Cloud Saves nas configurações.' }
       const result = await cloudSaves.backupCloudSavesAfterExit(options)
       return { success: result.success, message: result.message, error: result.success ? undefined : result.message }
@@ -179,6 +180,7 @@ export const registerDriveHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => {
   ipcMain.handle('cloud-saves-game-restore', async (_event, gameUrl: string, fileId: string) => {
     try {
       const options = gameSaveOptions(gameUrl)
+      if (ctx.runningGames.has(gameUrl)) return { success: false, error: 'Feche o jogo antes de restaurar saves.' }
       if (typeof fileId !== 'string' || !fileId.trim()) return { success: false, error: 'Backup inválido.' }
       const backup = await cloudSaves.getGameBackupById(options, fileId)
       if (!backup || !backup.restorable) return { success: false, error: 'Este backup não é restaurável ou pertence a outro jogo.' }
