@@ -280,7 +280,8 @@ async function inspectLocalSaves(
 async function createHeuristicBackup(
   locations: DetectedSaveLocation[],
   backupDir: string,
-  gameTitle?: string
+  gameTitle?: string,
+  gameKey?: string
 ): Promise<{ success: boolean; zipPath?: string; message?: string }> {
   if (locations.length === 0) {
     return { success: false, message: 'Nenhuma pasta de saves detectada.' }
@@ -368,7 +369,7 @@ async function createHeuristicBackup(
       archive.append(JSON.stringify({
         version: 2, format: 'heuristic-bundle',
         platform: process.platform, gameTitle,
-        gameKey: computeCloudSavesGameKey({ title: gameTitle })
+        gameKey: gameKey || computeCloudSavesGameKey({ title: gameTitle })
       }, null, 2), { name: '.void-save-bundle.json' })
 
       // Add each save location as a directory
@@ -388,15 +389,72 @@ async function createHeuristicBackup(
   }
 }
 
+/**
+ * Restore heuristic archives without trusting arbitrary destination paths:
+ * bundle identity, platform, game folder, symlinks and safe roots are checked.
+ * Only reached after conflict policy approved restore and recovery succeeded.
+ */
+function restoreHeuristicSnapshot(
+  staging: string,
+  manifest: any,
+  opts: CloudSaveSyncOptions,
+  gameKey: string
+): void {
+  const infoPath = path.join(staging, 'manifest.json')
+  if (!fs.existsSync(infoPath)) throw new Error('Heuristic save manifest missing')
+  const info = JSON.parse(fs.readFileSync(infoPath, 'utf8'))
+  const expectedTitle = slugify(opts.title || '')
+  if (manifest.gameKey !== gameKey || slugify(info.gameTitle || '') !== expectedTitle ||
+      manifest.platform !== process.platform) {
+    throw new Error('Backup belongs to a different game or operating system')
+  }
+  if (!Array.isArray(info.locations) || info.locations.length === 0) {
+    throw new Error('Save backup has no mapped locations')
+  }
+  const appHome = app.getPath('home')
+  const protonRoot = guessWinePrefixFromCompatData(opts.protonPrefix)
+  const gameFolder = opts.gameInstallPath || (opts.gameUrl ? (getGame(opts.gameUrl) as any)?.install_path : '') || ''
+  const approvedRoots = [appHome, protonRoot, gameFolder].filter(Boolean).map(p => path.resolve(String(p)))
+  const underRoot = (target: string, root: string) => {
+    const rel = path.relative(root, target)
+    return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel))
+  }
+  const planned: Array<{ from: string; to: string }> = []
+  for (let i = 0; i < info.locations.length; i++) {
+    const item = info.locations[i]
+    const to = path.resolve(String(item?.path || ''))
+    const folderName = `${i}_${item.type}_${item.steamAppId || item.gameName || 'saves'}`.replace(/[^a-zA-Z0-9_-]/g, '_')
+    const from = path.join(staging, folderName)
+    if (!path.isAbsolute(String(item.path || '')) ||
+        !approvedRoots.some(root => underRoot(to, root)) ||
+        !fs.existsSync(from) || !fs.statSync(from).isDirectory()) {
+      throw new Error('Unsafe or missing save destination in cloud archive')
+    }
+    // Prevent writing through a symlink in any existing destination parent.
+    let cursor = to
+    while (path.dirname(cursor) !== cursor) {
+      if (fs.existsSync(cursor) && fs.lstatSync(cursor).isSymbolicLink()) {
+        throw new Error('Refusing to restore saves through a symlink')
+      }
+      cursor = path.dirname(cursor)
+    }
+    planned.push({ from, to })
+  }
+  for (const { from, to } of planned) {
+    fs.mkdirSync(to, { recursive: true })
+    fs.cpSync(from, to, { recursive: true, force: true })
+  }
+}
+
+/**
+ * Called after install and before launch. It may restore only when no local
+ * saves exist, or after an explicit user choice and an independent recovery
+ * snapshot. Old backups without bundled metadata are never auto-restored.
+ */
 export async function restoreCloudSavesBeforeLaunch(opts: CloudSaveSyncOptions): Promise<{ success: boolean; message?: string; skipped?: boolean }> {
-  // Check if cloud saves feature is enabled
   if (!drive.isCloudSavesEnabled()) {
     return { success: true, skipped: true, message: 'Cloud Saves desabilitado.' }
   }
-  await ensureLudusaviAvailable({ allowDownload: true })
-  const bin = await resolveLudusaviBinary()
-  if (!bin) return { success: true, skipped: true, message: 'Ludusavi não encontrado; pulando restore.' }
-
   const gameKey = computeCloudSavesGameKey(opts)
   const remote = await getNewestRemoteForGameKey(gameKey)
   if (!remote) return { success: true, skipped: true, message: 'Nenhum backup remoto encontrado.' }
@@ -405,46 +463,95 @@ export async function restoreCloudSavesBeforeLaunch(opts: CloudSaveSyncOptions):
   const backupDir = ludusaviBackupDirForGame(gameKey)
   ensureDir(configDir)
   ensureDir(backupDir)
-
-  const resolvedName = await resolveLudusaviGameName({ steamId: opts.steamAppId, title: opts.title })
-  if (!resolvedName) return { success: false, message: 'Não foi possível identificar o jogo no Ludusavi.' }
-
-  // Steam Cloud-like decision: only restore if remote appears newer than live local saves.
   const winePrefix = guessWinePrefixFromCompatData(opts.protonPrefix)
-  const localStateMs = await getLocalSaveStateMsViaPreview({ configDir, backupDir, gameName: resolvedName, winePrefix })
-  const remoteMs = parseDriveModifiedTimeMs(remote.modifiedTime)
-  const DRIFT_MS = 30_000
-  if (localStateMs != null && remoteMs != null && localStateMs > remoteMs + DRIFT_MS) {
-    return { success: true, skipped: true, message: 'Saves locais parecem mais novos; ignorando restore remoto.' }
+  const name = await resolveLudusaviGameName({ steamId: opts.steamAppId, title: opts.title })
+  const local = await inspectLocalSaves(opts, configDir, backupDir, name, winePrefix)
+  const props = remote.appProperties || {}
+  const remoteTimestamp = Number(props.voidSaveMtime)
+  const remoteSaveMs = Number.isFinite(remoteTimestamp) && remoteTimestamp > 0 ? remoteTimestamp : null
+  const action = chooseSafeSaveAction(
+    { exists: local.exists, modifiedMs: local.modifiedMs },
+    { exists: true, modifiedMs: remoteSaveMs }
+  )
+  if (action === 'local' || action === 'none') {
+    return { success: true, skipped: true, message: 'Save local preservado; não houve sobrescrita.' }
   }
 
-  const remoteName = safeRemoteZipFilename(remote.name)
-  if (!remoteName) return { success: false, message: 'Nome inválido de backup remoto.' }
-
-  // Save a local recovery point before overwriting an existing save.
-  if (localStateMs != null) {
-    const rescueDir = path.join(app.getPath('userData'), 'ludusavi-recovery', gameKey, String(Date.now()))
-    ensureDir(rescueDir)
-    const rescue = await ludusaviBackupOne({ configDir, backupDir: rescueDir, gameName: resolvedName, winePrefix })
-    if (!rescue.ok || !newestZipInDir(rescueDir)) {
-      return { success: false, message: 'Restore remoto bloqueado: não foi possível criar backup local de segurança.' }
+  const format = String(props.voidFormat || '')
+  if (!['ludusavi-bundle', 'heuristic-bundle'].includes(format)) {
+    return {
+      success: true, skipped: true,
+      message: 'Backup antigo sem estrutura de restauração verificável. Preservado no Drive para recuperação manual.'
     }
   }
 
-  const localZip = path.join(backupDir, remoteName)
-  const dl = await drive.downloadSave(remote.id, localZip)
-  if (!dl.success) return { success: false, message: dl.message || 'Falha ao baixar backup do Drive.' }
-  if (!isValidBackupZip(localZip)) {
-    try { fs.rmSync(localZip, { force: true }) } catch {}
-    return { success: false, message: 'O arquivo baixado do Drive não é um ZIP completo.' }
+  if (action === 'ask') {
+    const readable = (time: number | null) => time != null ? new Date(time).toLocaleString() : 'data desconhecida'
+    const answer = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Conflito de saves - VoidLauncher',
+      message: `Foram encontrados saves locais e no Drive para ${opts.title || gameKey}.`,
+      detail: `Local: ${readable(local.modifiedMs)}\nDrive: ${readable(remoteSaveMs)}\n\nRestaurar do Drive irá substituir arquivos locais. O launcher criará uma cópia de segurança primeiro.`,
+      buttons: ['Manter saves locais', 'Restaurar do Drive', 'Cancelar'],
+      defaultId: 0, cancelId: 2, noLink: true
+    })
+    if (answer.response !== 1) {
+      return { success: true, skipped: true, message: 'Conflito preservado: usuário manteve os saves locais.' }
+    }
   }
 
-  const res = await ludusaviRestoreOne({ configDir, backupDir, gameName: resolvedName })
-  if (!res.ok) {
-    return { success: false, message: res.stderr || res.stdout || 'Ludusavi restore falhou.' }
+  // Before any overwrite, create an independent, local recovery point.
+  if (local.exists) {
+    const rescueDir = path.join(app.getPath('userData'), 'ludusavi-recovery', gameKey, String(Date.now()))
+    ensureDir(rescueDir)
+    let rescued = false
+    if (name) {
+      await ensureLudusaviAvailable({ allowDownload: true })
+      const rescue = await ludusaviBackupOne({ configDir, backupDir: rescueDir, gameName: name, winePrefix })
+      rescued = rescue.ok && hasLudusaviMapping(rescueDir)
+    }
+    if (!rescued && local.locations.some(loc => (loc.saveFileCount || 0) > 0)) {
+      const heuristic = await createHeuristicBackup(
+        local.locations.filter(loc => (loc.saveFileCount || 0) > 0),
+        rescueDir, opts.title, gameKey
+      )
+      rescued = heuristic.success && !!heuristic.zipPath && isValidBackupZip(heuristic.zipPath)
+    }
+    if (!rescued) return {
+      success: false,
+      message: 'Restauração cancelada: não foi possível preservar um backup local de segurança.'
+    }
   }
 
-  return { success: true }
+  const remoteName = safeRemoteZipFilename(remote.name)
+  if (!remoteName) return { success: false, message: 'Nome inválido do backup remoto.' }
+  const staging = fs.mkdtempSync(path.join(app.getPath('temp'), 'void-save-restore-'))
+  try {
+    const downloaded = path.join(staging, remoteName)
+    const res = await drive.downloadSave(remote.id, downloaded)
+    if (!res.success) throw new Error(res.message || 'Falha ao baixar backup remoto')
+    const unpackDir = path.join(staging, 'contents')
+    const manifest = await unpackSaveBundle(downloaded, unpackDir)
+    if (manifest.gameKey !== gameKey || manifest.format !== format ||
+        manifest.platform !== process.platform) {
+      throw new Error('Backup pertence a outro jogo ou plataforma; restauração bloqueada')
+    }
+    if (format === 'ludusavi-bundle') {
+      if (!hasLudusaviMapping(unpackDir)) throw new Error('Snapshot Ludusavi sem mapping.yaml ou arquivos')
+      await ensureLudusaviAvailable({ allowDownload: true })
+      const restoreName = await resolveLudusaviGameName({ steamId: opts.steamAppId, title: opts.title })
+      if (!restoreName) throw new Error('Nome do jogo não identificado no Ludusavi')
+      const result = await ludusaviRestoreOne({ configDir, backupDir: unpackDir, gameName: restoreName })
+      if (!result.ok) throw new Error(result.stderr || result.stdout || 'Ludusavi não conseguiu restaurar o backup')
+    } else {
+      restoreHeuristicSnapshot(unpackDir, manifest, opts, gameKey)
+    }
+    return { success: true, message: 'Save restaurado do Drive com verificação de origem e formato.' }
+  } catch (err: any) {
+    return { success: false, message: err?.message || String(err) }
+  } finally {
+    try { fs.rmSync(staging, { recursive: true, force: true }) } catch {}
+  }
 }
 
 export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Promise<{ success: boolean; message?: string; skipped?: boolean; fileId?: string }> {
@@ -505,7 +612,7 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
 
     if (detected.length > 0) {
       console.log('[CloudSaves] Detected', detected.length, 'save locations via heuristics/PCGamingWiki')
-      const heuristicResult = await createHeuristicBackup(detected, backupDir, opts.title || undefined)
+      const heuristicResult = await createHeuristicBackup(detected, backupDir, opts.title || undefined, gameKey)
       if (heuristicResult.success && heuristicResult.zipPath) {
         zipPath = heuristicResult.zipPath
         usedHeuristic = true
