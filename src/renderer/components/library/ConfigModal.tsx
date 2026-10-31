@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { RefreshCw, Trash2, AlertCircle, Users, Globe, Lock, Unlock, Copy, Check, Wifi, WifiOff, Plus, LogIn, LogOut, Settings2, Crown, User, Image, FolderOpen, Play, FileText, Wrench, Gamepad2, Monitor, Terminal, ChevronDown, X, Upload, Download, SlidersHorizontal, PenLine } from 'lucide-react'
+import { RefreshCw, Trash2, AlertCircle, Users, Globe, Lock, Unlock, Copy, Check, Wifi, WifiOff, Plus, LogIn, LogOut, Settings2, Crown, User, Image, FolderOpen, Play, FileText, Wrench, Gamepad2, Monitor, Terminal, ChevronDown, X, Upload, Download, SlidersHorizontal, PenLine, Cloud } from 'lucide-react'
 import type { Game, GameConfigTab, ConfigSaveState, ProtonOptions, ProtonRuntime, LanMode, IniField, VpnStatusState, VpnPeer, PrefixJobState, VpnRoom, CommunityGameFix } from './types'
 import { useI18n } from '../../i18n'
 import { ipcErrorText } from '../../../shared/ipcErrors'
@@ -7,6 +7,7 @@ import { useModalA11y } from '../../hooks/useModalA11y'
 import { FixEditorModal } from './FixEditorModal'
 import { FixInputsModal } from './FixInputsModal'
 import { FixDownloadsModal } from './FixDownloadsModal'
+import { GameSavesTab } from './GameSavesTab'
 import { extractFixInputValues } from '../../../shared/fixInputs'
 import { fixDownloadHost } from '../../../shared/fixDownloads'
 import { currentFixOs, fixAppliesToOs } from '../../../shared/fixOs'
@@ -125,7 +126,7 @@ export function ConfigModal(props: ConfigModalProps) {
               </div>
             </div>
             <div className="config-modal-actions">
-              <div className="config-save-pill" data-status={configTab === 'onlinefix' ? (props.iniSaving ? 'saving' : props.iniDirty ? 'pending' : 'saved') : configSaveState.status}>
+              {configTab !== 'saves' && <div className="config-save-pill" data-status={configTab === 'onlinefix' ? (props.iniSaving ? 'saving' : props.iniDirty ? 'pending' : 'saved') : configSaveState.status}>
                 {configTab === 'onlinefix'
                   ? (props.iniSaving
                     ? t('common.saving')
@@ -143,7 +144,7 @@ export function ConfigModal(props: ConfigModalProps) {
                         : configSaveState.status === 'error'
                           ? t('downloads.status.error')
                           : t('settings.save.idle'))}
-              </div>
+              </div>}
               <button className="config-close-btn" onClick={onClose} title={t('login.close')} aria-label={t('login.close')}>
                 <X size={18} />
               </button>
@@ -167,6 +168,10 @@ export function ConfigModal(props: ConfigModalProps) {
               <SlidersHorizontal size={14} />
               <span>{t('library.configModal.tabs.fixes')}</span>
             </button>
+            <button className={configTab === 'saves' ? 'config-tab-btn active' : 'config-tab-btn'} onClick={() => onTabChange('saves')} type="button">
+              <Cloud size={14} />
+              <span>{t('library.saves.tab')}</span>
+            </button>
             <button className={configTab === 'diagnostico' ? 'config-tab-btn active' : 'config-tab-btn'} onClick={() => onTabChange('diagnostico')} type="button">
               <Terminal size={14} />
               <span>{t('library.configModal.tabs.diagnostics')}</span>
@@ -181,6 +186,7 @@ export function ConfigModal(props: ConfigModalProps) {
           {configTab === 'onlinefix' && <OnlineFixTab {...props} />}
           {isLinux && configTab === 'proton' && <ProtonTab {...props} />}
           {configTab === 'fixes' && <FixesTab {...props} />}
+          {configTab === 'saves' && <GameSavesTab game={game} />}
           {configTab === 'diagnostico' && <DiagnosticsTab {...props} />}
           {configTab === 'lan' && <LanTab {...props} />}
         </div>
