@@ -1,7 +1,7 @@
 /**
  * IPC Handlers for Google Drive and Cloud Saves
  */
-import { shell } from 'electron'
+import { shell, dialog } from 'electron'
 import { trustedIpcMain as ipcMain } from './trustedIpc'
 import fs from 'fs'
 import path from 'path'
@@ -140,6 +140,105 @@ export const registerDriveHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => {
       return restoreRes
     } catch (e: any) {
       return { success: false, message: e?.message || String(e) }
+    }
+  })
+
+  const gameSaveOptions = (gameUrl: unknown) => {
+    if (typeof gameUrl !== 'string' || !gameUrl.trim()) throw new Error('Jogo inválido.')
+    const game = getGame(gameUrl.trim()) as any
+    if (!game) throw new Error('Jogo não encontrado na biblioteca.')
+    return {
+      gameUrl: gameUrl.trim(),
+      title: String(game.title || ''),
+      steamAppId: game.steam_app_id || null,
+      protonPrefix: game.proton_prefix || null,
+      gameInstallPath: game.install_path || null
+    }
+  }
+
+  ipcMain.handle('cloud-saves-game-overview', async (_event, gameUrl: string) => {
+    try {
+      const overview = await cloudSaves.getGameSaveOverview(gameSaveOptions(gameUrl))
+      return { success: true, overview }
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) }
+    }
+  })
+
+  ipcMain.handle('cloud-saves-game-backup', async (_event, gameUrl: string) => {
+    try {
+      const options = gameSaveOptions(gameUrl)
+      if (!drive.isCloudSavesEnabled()) return { success: false, error: 'Conecte o Drive e ative Cloud Saves nas configurações.' }
+      const result = await cloudSaves.backupCloudSavesAfterExit(options)
+      return { success: result.success, message: result.message, error: result.success ? undefined : result.message }
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) }
+    }
+  })
+
+  ipcMain.handle('cloud-saves-game-restore', async (_event, gameUrl: string, fileId: string) => {
+    try {
+      const options = gameSaveOptions(gameUrl)
+      if (typeof fileId !== 'string' || !fileId.trim()) return { success: false, error: 'Backup inválido.' }
+      const backup = await cloudSaves.getGameBackupById(options, fileId)
+      if (!backup || !backup.restorable) return { success: false, error: 'Este backup não é restaurável ou pertence a outro jogo.' }
+      const result = await cloudSaves.restoreCloudSavesBeforeLaunch(options, fileId)
+      if (result.success && !result.skipped) {
+        const gameKey = cloudSaves.computeCloudSavesGameKey(options)
+        const entry = { at: Date.now(), gameKey, gameUrl, stage: 'restore' as const,
+          level: 'success' as const, message: result.message || 'Save restaurado pelo usuário.' }
+        recordCloudSaves(entry)
+        ctx.sendCloudSavesStatus(entry)
+      }
+      return { success: result.success, skipped: result.skipped, message: result.message, error: result.success ? undefined : result.message }
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) }
+    }
+  })
+
+  ipcMain.handle('cloud-saves-game-export', async (_event, gameUrl: string, fileId: string) => {
+    try {
+      const options = gameSaveOptions(gameUrl)
+      const backup = await cloudSaves.getGameBackupById(options, fileId)
+      if (!backup) return { success: false, error: 'Backup não encontrado para este jogo.' }
+      const choice = await dialog.showSaveDialog({
+        title: 'Salvar cópia do backup',
+        defaultPath: backup.name,
+        filters: [{ name: 'Backup ZIP', extensions: ['zip'] }]
+      })
+      if (choice.canceled || !choice.filePath) return { success: true, canceled: true }
+      const result = await drive.downloadSave(fileId, choice.filePath)
+      return { success: result.success, error: result.success ? undefined : result.message, path: result.success ? choice.filePath : undefined }
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) }
+    }
+  })
+
+  ipcMain.handle('cloud-saves-game-delete-backup', async (_event, gameUrl: string, fileId: string) => {
+    try {
+      const options = gameSaveOptions(gameUrl)
+      const backup = await cloudSaves.getGameBackupById(options, fileId)
+      if (!backup) return { success: false, error: 'Backup não encontrado para este jogo.' }
+      const overview = await cloudSaves.getGameSaveOverview(options)
+      if (backup.restorable && backup.role === 'main' &&
+        overview.backups.filter(b => b.restorable && b.role === 'main').length <= 1) {
+        return { success: false, error: 'O último backup principal deste jogo foi preservado. Exporte uma cópia antes de removê-lo.' }
+      }
+      const choice = await dialog.showMessageBox({
+        type: 'warning', title: 'Excluir backup do Drive?',
+        message: `Excluir definitivamente "${backup.name}"?`,
+        detail: 'O arquivo será removido do Google Drive. Saves locais não serão alterados.',
+        buttons: ['Cancelar', 'Excluir backup'], defaultId: 0, cancelId: 0, noLink: true
+      })
+      if (choice.response !== 1) return { success: true, canceled: true }
+      // Recheck ownership immediately before deletion.
+      if (!await cloudSaves.getGameBackupById(options, fileId)) {
+        return { success: false, error: 'Backup não pertence mais a este jogo.' }
+      }
+      const removed = await drive.deleteFile(fileId)
+      return { success: removed.success, error: removed.success ? undefined : removed.message }
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) }
     }
   })
 
