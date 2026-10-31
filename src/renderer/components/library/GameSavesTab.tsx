@@ -27,6 +27,7 @@ type Overview = {
   connected: boolean
   local: { exists: boolean; modifiedMs: number | null; locations: LocalLocation[] }
   backups: SaveBackup[]
+  customLocations: string[]
   recommendation: 'restore' | 'local' | 'ask' | 'none'
 }
 
@@ -91,6 +92,12 @@ export function GameSavesTab({ game }: { game: Game }) {
         <div className="config-section-header">
           <HardDrive size={18} />
           <h4>{t('library.saves.localTitle')}</h4>
+          <button className="config-btn secondary" onClick={() =>
+            void run('add-folder', () => window.electronAPI.cloudSavesGameAddFolder(game.url))}
+            disabled={!!busy || loading}>
+            <FolderOpen size={14} />
+            {t('library.saves.addFolder')}
+          </button>
           <button className="config-btn secondary" onClick={() => { void load() }} disabled={loading || !!busy}>
             <RefreshCw size={14} className={loading ? 'of-spin' : ''} />
             {t('common.refresh')}
@@ -108,6 +115,24 @@ export function GameSavesTab({ game }: { game: Game }) {
               {data.local.modifiedMs != null && <p className="config-hint">{t('library.saves.modified')}: {displayTime(data.local.modifiedMs)}</p>}
               {data.local.locations.length === 0 && (
                 <p className="config-hint">{t('library.saves.notDetected')}</p>
+              )}
+              {data.customLocations.length > 0 && (
+                <div className="config-section" style={{ marginBottom: 12 }}>
+                  <div className="config-section-content">
+                    <strong>{t('library.saves.customFolders')}</strong>
+                    {data.customLocations.map(folder => (
+                      <div key={folder} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+                        <code style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{folder}</code>
+                        <button className="config-btn secondary" disabled={!!busy}
+                          title={t('library.saves.removeFolderHint')} onClick={() =>
+                            void run('remove-folder:' + folder, () =>
+                              window.electronAPI.cloudSavesGameRemoveFolder(game.url, folder))}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
               {data.local.locations.map((loc, index) => (
                 <div key={loc.path + index} className="config-form-row" style={{ alignItems: 'center', marginBottom: 10 }}>
