@@ -146,7 +146,9 @@ export function GameSavesTab({ game }: { game: Game }) {
               {data.local.locations.map((loc, index) => (
                 <div key={loc.path + index} className="config-form-row" style={{ alignItems: 'center', marginBottom: 10 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <strong>{loc.type}</strong>
+                    <strong>{loc.type === 'unknown' && data.customLocations.includes(loc.path)
+                      ? t('library.saves.manualSource')
+                      : loc.type}</strong>
                     <p className="config-hint" style={{ overflowWrap: 'anywhere', margin: '4px 0' }}>{loc.path}</p>
                     <small className="config-hint">
                       {t('library.saves.files')}: {loc.fileCount}
