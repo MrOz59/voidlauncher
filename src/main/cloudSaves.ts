@@ -15,6 +15,7 @@ import {
 } from './ludusavi'
 import { detectSaveLocationsAsync, DetectedSaveLocation } from './saveDetector'
 import { getGame } from './db'
+import { isValidBackupZip, safeRemoteZipFilename } from './backupIntegrity'
 
 function slugify(text: string) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
@@ -108,34 +109,6 @@ function remoteHeuristicPrefixForGame(gameKey: string): string {
   return `heuristic_${gameKey}__main_`
 }
 
-function safeRemoteZipFilename(fileName: string): string | null {
-  const name = String(fileName || '').trim()
-  if (!name || !name.toLowerCase().endsWith('.zip') || name.includes('/') || name.includes('\\') ||
-      name === '.' || name === '..') return null
-  return name
-}
-
-/** Reject missing/empty/non-ZIP uploads and incomplete Drive downloads. */
-function isValidBackupZip(filePath: string): boolean {
-  let handle: number | undefined
-  try {
-    const st = fs.statSync(filePath)
-    if (!st.isFile() || st.size < 22) return false
-    handle = fs.openSync(filePath, 'r')
-    const signature = Buffer.alloc(4)
-    if (fs.readSync(handle, signature, 0, 4, 0) !== 4 ||
-        !signature.subarray(0, 2).equals(Buffer.from('PK'))) return false
-    // Every normal ZIP includes an end-of-central-directory record in its tail.
-    const tailSize = Math.min(st.size, 65557)
-    const tail = Buffer.alloc(tailSize)
-    fs.readSync(handle, tail, 0, tailSize, st.size - tailSize)
-    return tail.includes(Buffer.from([0x50, 0x4b, 0x05, 0x06]))
-  } catch {
-    return false
-  } finally {
-    if (handle !== undefined) try { fs.closeSync(handle) } catch {}
-  }
-}
 
 async function pruneLegacyBackups(gameKey: string): Promise<void> {
   // The old "ludusavi_<game>_" prefix also matches __main_ and __conflict_.
