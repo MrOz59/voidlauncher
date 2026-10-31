@@ -344,6 +344,7 @@ export async function getGameBackupById(opts: CloudSaveSyncOptions, fileId: stri
  * non-empty directory as a local save even if the extension is unknown.
  */
 function locationContainsSaves(loc: DetectedSaveLocation): boolean {
+  if (loc.source === 'manual') return (loc.saveFileCount || 0) > 0
   if ((loc.saveFileCount || 0) > 0) return true
   if (loc.type !== 'pcgamingwiki' && loc.type !== 'onlinefix' &&
       !/(?:^|[\\/])(savegames?|savedata|remote|profiles?)(?:[\\/]|$)/i.test(loc.path)) return false
@@ -608,7 +609,8 @@ function restoreHeuristicSnapshot(
   const appHome = app.getPath('home')
   const protonRoot = guessWinePrefixFromCompatData(opts.protonPrefix)
   const gameFolder = opts.gameInstallPath || (opts.gameUrl ? (getGame(opts.gameUrl) as any)?.install_path : '') || ''
-  const approvedRoots = [appHome, protonRoot, gameFolder].filter(Boolean).map(p => path.resolve(String(p)))
+  const approvedRoots = [appHome, protonRoot, gameFolder,
+    ...getCustomSaveLocations(gameKey)].filter(Boolean).map(p => path.resolve(String(p)))
   const underRoot = (target: string, root: string) => {
     const rel = path.relative(root, target)
     return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel))
