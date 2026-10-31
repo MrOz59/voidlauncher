@@ -14,7 +14,7 @@ import {
   resolveLudusaviGameName
 } from './ludusavi'
 import { detectSaveLocationsAsync, DetectedSaveLocation } from './saveDetector'
-import { getGame } from './db'
+import { getGame, getSetting, setSetting } from './db'
 import { isValidBackupZip, safeRemoteZipFilename } from './backupIntegrity'
 import { chooseSafeSaveAction } from './saveSyncPolicy'
 import { makeSaveBundle, unpackSaveBundle, hasLudusaviMapping } from './saveBundles'
@@ -364,6 +364,70 @@ function locationContainsSaves(loc: DetectedSaveLocation): boolean {
   return false
 }
 
+const customSaveSettingKey = (gameKey: string) => `cloud_save_locations_${gameKey}`
+
+/** Explicitly selected save folders, kept separate for each game. */
+export function getCustomSaveLocations(gameKey: string): string[] {
+  try {
+    const stored = JSON.parse(String(getSetting(customSaveSettingKey(gameKey)) || '[]'))
+    if (!Array.isArray(stored)) return []
+    return stored.filter((value): value is string => typeof value === 'string' && path.isAbsolute(value))
+      .slice(0, 20)
+  } catch {
+    return []
+  }
+}
+
+export function addCustomSaveLocation(gameKey: string, folder: string): void {
+  const root = path.resolve(folder)
+  const stat = fs.lstatSync(root)
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Selecione uma pasta local de saves.')
+  const home = path.resolve(app.getPath('home'))
+  const disallowed = [path.parse(root).root, home, app.getPath('downloads'),
+    path.join(home, 'Documents'), path.join(home, 'Desktop'),
+    path.join(home, 'AppData'), path.join(home, '.config')].map(p => path.resolve(p))
+  if (disallowed.some(p => process.platform === 'win32' ? p.toLowerCase() === root.toLowerCase() : p === root)) {
+    throw new Error('Selecione a pasta específica do jogo, não uma pasta geral do sistema.')
+  }
+  const entries = new Set(getCustomSaveLocations(gameKey))
+  if (entries.size >= 20 && !entries.has(root)) throw new Error('Limite de 20 pastas manuais por jogo.')
+  entries.add(root)
+  setSetting(customSaveSettingKey(gameKey), JSON.stringify([...entries]))
+}
+
+export function removeCustomSaveLocation(gameKey: string, folder: string): void {
+  const entries = getCustomSaveLocations(gameKey).filter(p => path.resolve(p) !== path.resolve(folder))
+  setSetting(customSaveSettingKey(gameKey), JSON.stringify(entries))
+}
+
+function scanCustomLocation(folder: string): DetectedSaveLocation {
+  let fileCount = 0
+  let size = 0
+  let latest = 0
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: folder, depth: 0 }]
+  while (stack.length && fileCount < 25000) {
+    const item = stack.pop()!
+    if (item.depth > 8) continue
+    try {
+      for (const entry of fs.readdirSync(item.dir, { withFileTypes: true })) {
+        const p = path.join(item.dir, entry.name)
+        if (entry.isSymbolicLink()) continue
+        if (entry.isDirectory()) stack.push({ dir: p, depth: item.depth + 1 })
+        else if (entry.isFile()) {
+          const stat = fs.statSync(p)
+          fileCount++
+          size += stat.size
+          latest = Math.max(latest, stat.mtimeMs)
+        }
+      }
+    } catch {}
+  }
+  return {
+    path: folder, type: 'unknown', source: 'manual', confidence: 'high',
+    saveFileCount: fileCount, totalSize: size, lastModified: latest ? new Date(latest) : undefined
+  }
+}
+
 type LocalSaveSnapshot = {
   exists: boolean
   modifiedMs: number | null
@@ -381,7 +445,15 @@ async function inspectLocalSaves(
     gameTitle: opts.title || savedGame?.title || undefined,
     steamAppId: opts.steamAppId || savedGame?.steam_app_id || undefined
   })
-  const real = locations.filter(locationContainsSaves)
+  // Manual paths supplement Ludusavi and PCGamingWiki; never discard them.
+  const gameKey = computeCloudSavesGameKey(opts)
+  const manual = getCustomSaveLocations(gameKey).map(folder => {
+    try { return fs.statSync(folder).isDirectory() ? scanCustomLocation(folder) : null }
+    catch { return null }
+  }).filter((loc): loc is DetectedSaveLocation => loc !== null)
+  const known = new Set(locations.map(loc => path.resolve(loc.path).toLowerCase()))
+  for (const loc of manual) if (!known.has(path.resolve(loc.path).toLowerCase())) locations.push(loc)
+  const real = locations.filter(loc => (loc.source === 'manual' && (loc.saveFileCount || 0) > 0) || locationContainsSaves(loc))
   let modifiedMs: number | null = null
   for (const loc of real) {
     const at = loc.lastModified?.getTime()
@@ -723,7 +795,7 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
 
   // Save the entire Ludusavi game directory (mapping.yaml + ZIP data).
   // A standalone archive inside it is not a restorable Ludusavi backup.
-  if (bin && resolvedName) {
+  if (bin && resolvedName && getCustomSaveLocations(gameKey).length === 0) {
     const snapshotRoot = fs.mkdtempSync(path.join(app.getPath('temp'), 'void-ludusavi-backup-'))
     try {
       const result = await ludusaviBackupOne({
