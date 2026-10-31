@@ -673,6 +673,10 @@ fn create_toast_window(app: &tauri::App) -> tauri::Result<WebviewWindow> {
     .position(x as f64, y as f64)
     .resizable(false)
     .decorations(false)
+    // Tauri's default native shadow draws an extra 1px border around
+    // undecorated windows on Windows. Keep only the HTML toast border.
+    // No effect on Linux (shadow is compositor-controlled there).
+    .shadow(false)
     .transparent(true)
     .skip_taskbar(true)
     .always_on_top(true)

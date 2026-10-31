@@ -39,6 +39,7 @@ function moveDirContentsOverwrite(srcDir: string, destDir: string) {
       }
     } catch (err) {
       console.warn('[RarWorker] Failed to move extracted entry', srcPath, '->', destPath, err)
+      throw err // Never signal 'done' after partial copy/move.
     }
   }
 }
@@ -77,6 +78,9 @@ async function run() {
       console.log('[RarWorker] extracted', entry.fileHeader?.name, percent.toFixed(1) + '%')
     }
 
+    if (processed === 0 || entries.length === 0) {
+      throw new Error('RAR archive contained no extractable game files')
+    }
     moveDirContentsOverwrite(tmpDir, destDir)
     parentPort?.postMessage({ type: 'progress', percent: 100 })
     parentPort?.postMessage({ type: 'done' })

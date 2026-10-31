@@ -24,6 +24,7 @@ import {
   writeOnlineFixIni,
   processUpdateExtraction,
   normalizeGameInstallDir,
+  validateGameInstall,
   getDownloadQueueStatus,
   reconcileDownloadState,
   prioritizeDownload,
@@ -226,6 +227,11 @@ export const registerDownloadHandlers: IpcHandlerRegistrar = (ctx: IpcContext) =
         if (!result.success) {
           return { success: false, error: result.error || 'Extraction failed' }
         }
+        try {
+          validateGameInstall(target, firstInstall)
+        } catch (error: any) {
+          return { success: false, error: error?.message || String(error) }
+        }
 
         ctx.getMainWindow()?.webContents.send('download-complete', {
           magnet: idKey,
@@ -248,6 +254,7 @@ export const registerDownloadHandlers: IpcHandlerRegistrar = (ctx: IpcContext) =
               url: gameUrl,
               title: record?.title || undefined,
               status: 'installed',
+              downloadId: record?.id || undefined,
               showInLibrary: true,
               installPath: target,
               version,
@@ -276,13 +283,20 @@ export const registerDownloadHandlers: IpcHandlerRegistrar = (ctx: IpcContext) =
       }
 
       // For HTTP downloads, use the standard extraction flow
-      const { archivePath, destDir } = findArchive(target)
+      const archiveSource = record?.type === 'http' && record?.dest_path
+        ? (path.isAbsolute(record.dest_path) ? record.dest_path : path.resolve(process.cwd(), record.dest_path))
+        : target
+      const { archivePath, destDir: discoveredDir } = findArchive(archiveSource)
+      const destDir = record?.install_path
+        ? (path.isAbsolute(record.install_path) ? record.install_path : path.resolve(process.cwd(), record.install_path))
+        : discoveredDir
       if (!archivePath) {
         return { success: false, error: 'Nenhum arquivo .zip/.rar/.7z encontrado para extrair', errorCode: 'no-archive-to-extract' }
       }
       const firstInstall = !hasExistingGameInstall(gameUrl, destDir)
 
       // Prevent deletion while extracting
+      fs.mkdirSync(destDir, { recursive: true })
       const extractionLockFile = path.join(destDir, '.extracting')
       try { fs.writeFileSync(extractionLockFile, 'extracting') } catch {}
 
@@ -320,28 +334,14 @@ export const registerDownloadHandlers: IpcHandlerRegistrar = (ctx: IpcContext) =
         return { success: false, error: extractErr?.message || String(extractErr) }
       }
 
-      console.log('[Extract] Extraction finished, deleting archive')
-      // Delete archive after extraction
+      // Retain archives when validation fails, so extraction can be retried.
       try {
-        fs.unlinkSync(archivePath)
-      } catch {
-        // ignore
+        validateGameInstall(destDir, firstInstall)
+      } catch (error: any) {
+        try { fs.unlinkSync(extractionLockFile) } catch {}
+        return { success: false, error: error?.message || String(error) }
       }
-
-      // Normalize extracted content
-      try {
-        normalizeGameInstallDir(destDir)
-      } catch {
-        // ignore
-      }
-
       try { fs.unlinkSync(extractionLockFile) } catch {}
-
-      ctx.getMainWindow()?.webContents.send('download-complete', {
-        magnet: idKey,
-        infoHash: infoHash || undefined,
-        destPath: destDir
-      })
 
       // Add to library after extraction
       if (gameUrl) {
@@ -370,6 +370,7 @@ export const registerDownloadHandlers: IpcHandlerRegistrar = (ctx: IpcContext) =
             url: gameUrl,
             title: record?.title || undefined,
             status: 'installed',
+            downloadId: record?.id || undefined,
             showInLibrary: true,
             installPath: destDir,
             version,
@@ -394,6 +395,14 @@ export const registerDownloadHandlers: IpcHandlerRegistrar = (ctx: IpcContext) =
         } catch {}
       }
 
+      try { fs.unlinkSync(archivePath) } catch (error) {
+        console.warn('[Extract] Archive cleanup failed after installation:', error)
+      }
+      ctx.getMainWindow()?.webContents.send('download-complete', {
+        magnet: idKey,
+        infoHash: infoHash || undefined,
+        destPath: destDir
+      })
       return { success: true, destPath: destDir }
     } catch (err: any) {
       return { success: false, error: err.message }

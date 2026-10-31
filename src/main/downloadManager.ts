@@ -1,6 +1,7 @@
 import { downloadFile, downloadTorrent, pauseTorrent, resumeTorrent, cancelTorrent, type TorrentProgress, isTorrentActive, getActiveTorrentIds, getActiveTorrentSnapshots } from './downloader'
 import { extractZipWithPassword } from './zip'
 import { processUpdateExtraction, findFilesRecursive } from './extractionUtils'
+import { isValidFinalizedInstall } from './installFinalization'
 import { findAndReadOnlineFixIni } from './utils/onlinefixIni'
 import { sanitizeVersionText } from './utils/versionUtils'
 import {
@@ -153,28 +154,29 @@ function fileExists(p?: string | null): boolean {
   try { return fs.existsSync(rp) } catch { return false }
 }
 
-function dirLooksInstalled(dir?: string | null): boolean {
-  const rp = resolvedPathMaybe(dir)
-  if (!rp || !fs.existsSync(rp)) return false
-  try {
-    if (fs.existsSync(path.join(rp, '.of_extracted'))) return true
-    if (fs.existsSync(path.join(rp, '.of_update_extracted'))) return true
-    const marker = path.join(rp, '.of_game.json')
-    if (fs.existsSync(marker)) {
-      const parsed = JSON.parse(fs.readFileSync(marker, 'utf8'))
-      if (parsed?.status === 'installed') return true
-    }
-  } catch {
-    // ignore malformed marker
-  }
-  return Boolean(findExecutableInDir(rp))
+/**
+ * Legacy markers and existing executables do not prove that the current
+ * download finished installing. Only an installed marker for this ID does.
+ */
+export function isDownloadInstallFinalized(download: { id?: number; game_url?: string | null }, installDir?: string | null): boolean {
+  const dir = resolvedPathMaybe(installDir)
+  if (!dir) return false
+  return isValidFinalizedInstall({
+    downloadId: Number(download?.id),
+    gameUrl: download?.game_url,
+    installDir: dir,
+    hasPayload: countFilesRecursive(dir, 1) > 0,
+    hasExecutable: process.platform !== 'win32' || Boolean(findExecutableInDir(dir)),
+    requireWindowsExecutable: process.platform === 'win32'
+  })
 }
 
 export function hasExistingGameInstall(gameUrl: string, installPath?: string | null): boolean {
   try {
     const game = getGame(gameUrl) as any
-    if (fileExists(game?.install_path) || fileExists(game?.executable_path)) return true
-    if (game?.installed_at && fileExists(installPath)) return true
+    if (fileExists(game?.executable_path)) return true
+    const knownPath = game?.install_path || installPath
+    if (game?.installed_at && knownPath && countFilesRecursive(knownPath, 1) > 0) return true
   } catch {
     // ignore DB lookup failures
   }
@@ -182,12 +184,10 @@ export function hasExistingGameInstall(gameUrl: string, installPath?: string | n
   const rp = resolvedPathMaybe(installPath)
   if (!rp || !fs.existsSync(rp)) return false
   try {
-    if (fs.existsSync(path.join(rp, '.of_extracted'))) return true
-    if (fs.existsSync(path.join(rp, '.of_update_extracted'))) return true
     const marker = path.join(rp, '.of_game.json')
     if (fs.existsSync(marker)) {
       const parsed = JSON.parse(fs.readFileSync(marker, 'utf8'))
-      if (parsed?.status === 'installed') return true
+      if (parsed?.status === 'installed' && countFilesRecursive(rp, 1) > 0) return true
     }
   } catch {
     // ignore malformed marker
@@ -234,7 +234,7 @@ export function reconcileDownloadState(reason = 'manual') {
     try {
       if (status === 'completed') continue
 
-      if (dirLooksInstalled(installPath) && progress >= 99) {
+      if (isDownloadInstallFinalized(d, installPath)) {
         updateDownloadProgress(id, 100)
         updateDownloadStatus(id, 'completed')
         deleteDownload(id)
@@ -255,7 +255,7 @@ export function reconcileDownloadState(reason = 'manual') {
       }
 
       if (status === 'extracting') {
-        if (dirLooksInstalled(installPath)) {
+        if (isDownloadInstallFinalized(d, installPath)) {
           updateDownloadProgress(id, 100)
           updateDownloadStatus(id, 'completed')
           deleteDownload(id)
@@ -269,7 +269,7 @@ export function reconcileDownloadState(reason = 'manual') {
       }
 
       if (type === 'torrent' && ['downloading', 'pending'].includes(status) && !hasAgent) {
-        if (progress >= 99 && dirLooksInstalled(installPath)) {
+        if (isDownloadInstallFinalized(d, installPath)) {
           updateDownloadProgress(id, 100)
           updateDownloadStatus(id, 'completed')
           deleteDownload(id)
@@ -618,12 +618,14 @@ function mergeMoveEntry(srcPath: string, destPath: string) {
 function flattenSingleSubdir(basePath: string) {
   try {
     const entries = fs.readdirSync(basePath, { withFileTypes: true })
-      .filter(e => e.name !== '.DS_Store' && e.name !== 'Thumbs.db')
+      .filter(e => e.name !== '.DS_Store' && e.name !== 'Thumbs.db' &&
+        !/^\.of_/.test(e.name) && e.name !== '.extracting')
 
     if (entries.length !== 1 || !entries[0].isDirectory()) return
 
     // Never flatten Unity _Data folders - they must stay next to the executable
-    if (entries[0].name.endsWith('_Data')) return
+    if (entries[0].name.endsWith('_Data') ||
+        /^(Engine|Content|Binaries|Plugins|Data|Resources|StreamingAssets|Managed|MonoBleedingEdge)$/i.test(entries[0].name)) return
 
     const subDir = path.join(basePath, entries[0].name)
     const subEntries = fs.readdirSync(subDir, { withFileTypes: true })
@@ -643,6 +645,7 @@ function flattenSingleSubdir(basePath: string) {
     console.log('[flattenSingleSubdir] Flattened nested folder:', subDir)
   } catch (err) {
     console.warn('[flattenSingleSubdir] Error while flattening', basePath, err)
+    throw err
   }
 }
 
@@ -743,7 +746,7 @@ function countFilesRecursive(dir: string, max = 5000): number {
       for (const entry of entries) {
         if (entry.isDirectory()) {
           stack.push(path.join(current, entry.name))
-        } else {
+        } else if (!/^\.of_|^\.extracting$|^\.DS_Store$|^Thumbs\.db$/i.test(entry.name)) {
           count++
           if (count >= max) return count
         }
@@ -810,6 +813,27 @@ export interface InstallIntegrityResult {
 }
 
 /**
+ * Reject invalid game payloads before marking a download as installed.
+ * Windows first installs require an EXE; Linux native/Proton compatibility
+ * retains the less restrictive executable heuristics.
+ */
+export function validateGameInstall(installPath: string, firstInstall = false): InstallIntegrityResult {
+  const result = normalizeGameInstallDir(installPath)
+  if (result.fileCount === 0) {
+    result.valid = false
+    result.warnings.push('No game payload files found after extraction')
+  }
+  if (process.platform === 'win32' && firstInstall && !result.hasExecutable) {
+    result.valid = false
+    result.warnings.push('No Windows executable found after extraction')
+  }
+  if (!result.valid) {
+    throw new Error(`Incomplete installation at ${installPath}: ${result.warnings.join('; ')}`)
+  }
+  return result
+}
+
+/**
  * Normalize game install directory structure and validate integrity.
  * Returns integrity check results for logging/debugging purposes.
  */
@@ -831,8 +855,8 @@ export function normalizeGameInstallDir(installPath: string): InstallIntegrityRe
     console.log('[normalizeGameInstallDir] Processing:', installPath)
 
     // Flatten one or two levels of nesting (common in OF releases).
-    flattenSingleSubdir(installPath)
-    flattenDominantSubdir(installPath)
+    // Do not flatten the most populated subdirectory: it can be Engine/ or
+    // Content/ and is a required part of the game's directory structure.
     flattenSingleSubdir(installPath)
 
     // Remove common junk folders that sometimes come with releases.
@@ -909,6 +933,8 @@ export function normalizeGameInstallDir(installPath: string): InstallIntegrityRe
       }
 
     } catch (integrityErr) {
+      result.valid = false
+      result.warnings.push('Could not inspect extracted files')
       console.warn('[normalizeGameInstallDir] Integrity check error:', integrityErr)
     }
 
@@ -1040,7 +1066,7 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
     if (downloadType === 'torrent') {
       if (isTorrentActive(url)) {
         console.log('[DownloadManager] Torrent already active, skipping duplicate start:', url)
-        return { success: true, firstInstall, wasUpdate: !firstInstall }
+        return { success: false, error: 'Este torrent já está em andamento' }
       }
       const aliases = [url, String(downloadId)]
 
@@ -1116,7 +1142,7 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
       // Clean temp download folder (best effort)
       removeFolderIfExists(downloadDestPath)
 
-      normalizeGameInstallDir(installPath)
+      // Wait until extraction finishes before modifying the game tree.
 
       // Remove common junk folders/files (but keep archives for extraction step)
       // Note: normalizeGameInstallDir already removes 'Fix Repair' from installPath
@@ -1153,8 +1179,8 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
       })
     }
 
-    // Download completed
-    updateDownloadStatus(Number(downloadId), 'completed')
+    // A completed transfer is not an installed game.
+    if (downloadType === 'http' && !autoExtract) updateDownloadStatus(Number(downloadId), 'completed')
 
     // Auto-extract if enabled (only for HTTP downloads)
     let finalInstallPath = installPath
@@ -1162,6 +1188,7 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
       updateDownloadStatus(Number(downloadId), 'extracting')
       const extractStart = Date.now()
 
+      fs.mkdirSync(installPath, { recursive: true })
       const markerPath = path.join(installPath, '.of_extracting.json')
       try {
         fs.writeFileSync(markerPath, JSON.stringify({ downloadId: Number(downloadId), gameUrl, archivePath: downloadFilePath, startedAt: Date.now() }, null, 2))
@@ -1192,21 +1219,9 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
         console.log('[DownloadManager] Extraction completed')
 
         // Flatten/normalize extracted content (avoid nested installs)
-        normalizeGameInstallDir(installPath)
+        validateGameInstall(installPath, firstInstall)
 
-        // Remove the zip file after extraction
-        fs.unlinkSync(downloadFilePath)
-
-        // Try to remove the download folder if empty
-        try {
-          const files = fs.readdirSync(downloadDestPath)
-          if (files.length === 0) {
-            fs.rmdirSync(downloadDestPath)
-          }
-        } catch (e) {
-          // Ignore cleanup errors
-        }
-
+        // Keep the archive until the DB and completion marker are written.
         // Try to find the executable
         const executablePath = findExecutable(installPath)
 
@@ -1227,6 +1242,7 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
           url: gameUrl,
           title: gameTitle,
           status: 'installed',
+          downloadId: Number(downloadId),
           showInLibrary: true,
           installPath,
           version,
@@ -1238,6 +1254,16 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
         updateDownloadStatus(Number(downloadId), 'completed')
         try { fs.unlinkSync(markerPath) } catch {}
         try { fs.writeFileSync(path.join(installPath, '.of_extracted'), String(Date.now())) } catch {}
+
+        // Archive cleanup must not reverse a verified installation's status.
+        try {
+          fs.unlinkSync(downloadFilePath)
+          if (fs.existsSync(downloadDestPath) && fs.readdirSync(downloadDestPath).length === 0) {
+            fs.rmdirSync(downloadDestPath)
+          }
+        } catch (cleanupError) {
+          console.warn('[DownloadManager] Archive cleanup failed after install:', cleanupError)
+        }
 
         // Emit final extraction progress to UI
         onProgress?.(100, { stage: 'extract', extractProgress: 100 })
@@ -1358,9 +1384,9 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
         worker.on('exit', (code) => {
           clearInterval(timeoutCheck)
           clearTimeout(hardTimeout)
-          if (!isResolved && code !== 0) {
+          if (!isResolved) {
             isResolved = true
-            reject(new Error(`Extraction worker exited with code ${code}`))
+            reject(new Error(`Extraction worker exited before completion (code ${code})`))
           }
         })
       })
@@ -1374,7 +1400,8 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
         }
       }
 
-      // After a successful extraction step, clean up archives left behind
+      // Keep archives until the final game payload passes validation.
+      validateGameInstall(installPath, firstInstall)
       removeArchives(installPath)
       removeArchives(downloadDestPath)
 
@@ -1396,6 +1423,7 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
         url: gameUrl,
         title: gameTitle,
         status: 'installed',
+        downloadId: Number(downloadId),
         showInLibrary: true,
         installPath,
         version,
@@ -1438,7 +1466,7 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
 
     return {
       success: true,
-      installPath: finalInstallPath,
+      installPath: downloadType === 'http' && !autoExtract ? undefined : finalInstallPath,
       firstInstall,
       wasUpdate: !firstInstall
     }
@@ -1917,13 +1945,14 @@ function moveDirContents(src: string, dest: string): void {
     }
   }
 
-  // Log summary of errors but don't throw - partial installs are better than no installs
+  // Partial file moves must fail the installation rather than be swallowed.
   if (errors.length > 0) {
     console.warn(`[moveDirContents] ${errors.length} file(s) failed to move:`)
     errors.slice(0, 10).forEach(e => console.warn(`  - ${e.path}: ${e.error}`))
     if (errors.length > 10) {
       console.warn(`  ... and ${errors.length - 10} more`)
     }
+    throw new Error(`Failed to move ${errors.length} downloaded files to the game folder`)
   }
 }
 

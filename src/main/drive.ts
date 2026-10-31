@@ -308,23 +308,67 @@ async function ensureAppFolder(drive: any) {
   return created.data.id
 }
 
-export async function listSaves(realAppId?: string): Promise<{ id: string; name: string; modifiedTime?: string }[] | { error: string }> {
+/**
+ * Newly created backups live under VoidLauncher/<game key>/ in Drive.
+ * Legacy backups remain in the original app folder and are still readable.
+ */
+async function ensureGameSavesFolder(driveClient: any, gameKey: string): Promise<string> {
+  const parentId = await ensureAppFolder(driveClient)
+  const safeKey = String(gameKey).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120)
+  if (!safeKey) return parentId
+  const folderName = `game_${safeKey}`
+  const found = await driveClient.files.list({
+    q: `'${escapeDriveQueryValue(parentId)}' in parents and mimeType='application/vnd.google-apps.folder' and name='${escapeDriveQueryValue(folderName)}' and trashed=false`,
+    fields: 'files(id,name)',
+    pageSize: 100
+  })
+  if (found.data.files?.[0]?.id) return found.data.files[0].id
+  const created = await driveClient.files.create({
+    requestBody: { name: folderName, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
+    fields: 'id'
+  })
+  return created.data.id || parentId
+}
+
+export async function listSaves(realAppId?: string): Promise<{ id: string; name: string; modifiedTime?: string; appProperties?: Record<string, string> }[] | { error: string }> {
   const client = loadOAuthClient()
   if (!client) return { error: 'Missing credentials or token. Authenticate first.' }
   try {
-    const folderId = await ensureAppFolder(client.drive)
-    // If realAppId provided, filter by filename prefix to only include that game's backups
-    const prefix = realAppId ? `ofsave_${String(realAppId)}_` : null
-    const qParts = [`'${escapeDriveQueryValue(folderId)}' in parents`, 'trashed=false']
-    if (prefix) qParts.push(`name contains '${escapeDriveQueryValue(prefix)}'`)
-    const q = qParts.join(' and ')
-    const res = await client.drive.files.list({
-      q,
-      fields: 'files(id, name, modifiedTime, appProperties)'
-    })
-    return (res.data.files || []).map((f: any) => ({ id: f.id, name: f.name, modifiedTime: f.modifiedTime, appProperties: f.appProperties })) as any
+    const root = await ensureAppFolder(client.drive)
+    const query = async (parentId: string): Promise<any[]> => {
+      const found: any[] = []
+      let pageToken: string | undefined
+      do {
+        const res = await client.drive.files.list({
+          q: `'${escapeDriveQueryValue(parentId)}' in parents and trashed=false`,
+          fields: 'nextPageToken,files(id,name,modifiedTime,mimeType,appProperties)',
+          pageSize: 1000,
+          ...(pageToken ? { pageToken } : {})
+        })
+        found.push(...(res.data.files || []))
+        pageToken = res.data.nextPageToken || undefined
+      } while (pageToken)
+      return found
+    }
+    const atRoot = await query(root)
+    const folders = atRoot.filter(x => x.mimeType === 'application/vnd.google-apps.folder' && String(x.name || '').startsWith('game_'))
+    const perGame = await Promise.all(folders.map(folder => query(folder.id)))
+    const files = [...atRoot, ...perGame.flat()].filter(x => x.mimeType !== 'application/vnd.google-apps.folder')
+    const id = String(realAppId || '').trim()
+    const relevant = id ? files.filter(f =>
+      String(f.appProperties?.voidSteamAppId || '') === id ||
+      f.name.startsWith(`ofsave_${id}_`) ||
+      f.name.startsWith(`ludusavi_steam_${id}_`) ||
+      f.name.startsWith(`heuristic_steam_${id}_`)
+    ) : files
+    return relevant.map(f => ({
+      id: f.id, name: f.name, modifiedTime: f.modifiedTime,
+      appProperties: f.appProperties
+    })).sort((x, y) =>
+      (parseDriveModifiedTimeMs(y.modifiedTime) || 0) -
+      (parseDriveModifiedTimeMs(x.modifiedTime) || 0))
   } catch (e: any) {
-    return { error: e.message || String(e) }
+    return { error: e?.message || String(e) }
   }
 }
 
@@ -353,8 +397,8 @@ export async function listFilesByAppProperties(props: Record<string, string>): P
   const client = loadOAuthClient()
   if (!client) return { error: 'Missing credentials or token. Authenticate first.' }
   try {
-    const folderId = await ensureAppFolder(client.drive)
-    const qParts = [`'${escapeDriveQueryValue(folderId)}' in parents`, 'trashed=false']
+    // Metadata is indexed across all game subfolders, not just the legacy root.
+    const qParts = ['trashed=false']
     const entries = Object.entries(props || {}).filter(([, v]) => String(v || '').trim() !== '')
     for (const [k, v] of entries) {
       const key = escapeDriveQueryValue(k)
@@ -362,11 +406,17 @@ export async function listFilesByAppProperties(props: Record<string, string>): P
       qParts.push(`appProperties has { key='${key}' and value='${val}' }`)
     }
     const q = qParts.join(' and ')
-    const res = await client.drive.files.list({
-      q,
-      fields: 'files(id, name, modifiedTime, appProperties)'
-    })
-    return (res.data.files || []).map((f: any) => ({ id: f.id, name: f.name, modifiedTime: f.modifiedTime, appProperties: f.appProperties }))
+    const files: any[] = []
+    let pageToken: string | undefined
+    do {
+      const res = await client.drive.files.list({
+        q, fields: 'nextPageToken,files(id,name,modifiedTime,appProperties)',
+        pageSize: 1000, ...(pageToken ? { pageToken } : {})
+      })
+      files.push(...(res.data.files || []))
+      pageToken = res.data.nextPageToken || undefined
+    } while (pageToken)
+    return files.map((f: any) => ({ id: f.id, name: f.name, modifiedTime: f.modifiedTime, appProperties: f.appProperties }))
   } catch (e: any) {
     return { error: e?.message || String(e) }
   }
@@ -434,7 +484,9 @@ export async function uploadSave(
   const client = loadOAuthClient()
   if (!client) return { success: false, message: 'Missing credentials or token. Authenticate first.' }
   try {
-    const folderId = await ensureAppFolder(client.drive)
+    const folderId = metadata?.appProperties?.voidGameKey
+      ? await ensureGameSavesFolder(client.drive, metadata.appProperties.voidGameKey)
+      : await ensureAppFolder(client.drive)
     const stream = fs.createReadStream(localPath)
     const res = await client.drive.files.create({
       requestBody: {
@@ -527,14 +579,30 @@ export async function downloadSave(fileId: string, destPath: string): Promise<{ 
   try {
     const destDir = path.dirname(destPath)
     if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true })
-    const res = await client.drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' })
-    await new Promise<void>((resolve, reject) => {
-      const ws = fs.createWriteStream(destPath)
-      res.data.pipe(ws)
-      ws.on('finish', () => resolve())
-      ws.on('error', (err: any) => reject(err))
-    })
-    return { success: true }
+    const tmp = `${destPath}.download-${process.pid}-${Date.now()}`
+    try {
+      const res = await client.drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' })
+      await new Promise<void>((resolve, reject) => {
+        let settled = false
+        const finish = (err?: Error) => {
+          if (settled) return
+          settled = true
+          if (err) reject(err)
+          else resolve()
+        }
+        const ws = fs.createWriteStream(tmp)
+        res.data.on('error', finish)
+        res.data.on('aborted', () => finish(new Error('Drive download aborted')))
+        ws.on('error', finish)
+        ws.on('finish', () => finish())
+        res.data.pipe(ws)
+      })
+      if (!fs.statSync(tmp).size) throw new Error('Drive returned an empty file')
+      fs.renameSync(tmp, destPath)
+      return { success: true }
+    } finally {
+      try { fs.rmSync(tmp, { force: true }) } catch {}
+    }
   } catch (e: any) {
     return { success: false, message: e.message || String(e) }
   }
@@ -843,14 +911,12 @@ export async function downloadAndExtractSaveTo(fileId: string, targetFolder: str
       throw new Error('Dependência ausente: fs-extra. Instale com `npm i fs-extra`.')
     }
     
-    // Empty the target directory before copying to guarantee a clean restore.
-    if (fs.existsSync(targetFolder)) {
-      await fse.emptyDir(targetFolder)
-    } else {
-      fs.mkdirSync(targetFolder, { recursive: true })
+    // A legacy archive lacks reliable save metadata. Never erase live saves.
+    if (fs.existsSync(targetFolder) && fs.readdirSync(targetFolder).length > 0) {
+      throw new Error('Save local existe. Restauração automática antiga foi bloqueada.')
     }
-
-    await fse.copy(extractDir, targetFolder, { overwrite: true })
+    fs.mkdirSync(targetFolder, { recursive: true })
+    await fse.copy(extractDir, targetFolder, { overwrite: false, errorOnExist: true })
 
     // Limpeza
     try { fs.unlinkSync(tmpPath) } catch {}
@@ -930,31 +996,18 @@ export async function syncSavesOnPlayStart(options: {
     console.log(`[DRIVE-SYNC-LOGIC] Local Date: ${localDate?.toISOString() || 'NULL'}`)
     console.log(`[DRIVE-SYNC-LOGIC] Remote Date: ${remoteDate?.toISOString() || 'NULL'}`)
 
-    // A. No local or remote saves.
-    if (!localDate && !remoteDate) { 
-      console.log('[DRIVE-SYNC-LOGIC] Não há saves locais nem remotos. Nada a fazer.')
-      return { success: true, message: 'Nenhum save local ou remoto encontrado.' }
+    // Legacy backups do not contain authoritative save timestamps. Never
+    // infer that they are newer from Drive's UPLOAD date, and never delete
+    // existing local files. The versioned cloudSaves module handles conflicts.
+    if (localDate) {
+      return {
+        success: true, skipped: true,
+        message: 'Saves locais preservados; backup antigo do Drive requer revisão manual.'
+      }
     }
-    
-    // B. Upload: local save is newer or remote save does not exist.
-    if (localDate && (!remoteDate || localDate.getTime() > remoteDate.getTime())) {
-      console.log('[DRIVE-SYNC-LOGIC] Decisão: Local é mais novo. Fazendo Backup (Upload).')
-      return await backupLocalSavesToDrive({ ...options, realAppId: rid })
-    }
-
-    // C. Download: remote save is newer, or remote exists while local does not.
-    if (remoteDate && (!localDate || remoteDate.getTime() > localDate.getTime())) {
-      console.log('[DRIVE-SYNC-LOGIC] Decisão: Remote é mais novo/Local não existe. Fazendo Download.')
-      
-      // Log that the download function is about to be called.
-      console.log(`[DRIVE-SYNC-LOGIC] Chamando downloadAndExtractSaveTo(fileId: ${remote!.id}, destPath: ${savesPath})`)
-      
-      return await downloadAndExtractSaveTo(remote!.id, savesPath)
-    }
-
-    // D. Saves are already synchronized.
-    console.log('[DRIVE-SYNC-LOGIC] Decisão: Saves estão sincronizados (datas iguais).')
-    return { success: true, message: 'Saves estão sincronizados.' }
+    if (!remote) return { success: true, skipped: true, message: 'Nenhum backup legado encontrado.' }
+    console.log('[Drive] Only restoring legacy backup because no local saves were detected')
+    return await downloadAndExtractSaveTo(remote.id, savesPath)
 
   } catch (e: any) {
     console.error('[DRIVE-SYNC-LOGIC] Erro durante a sincronização:', e)

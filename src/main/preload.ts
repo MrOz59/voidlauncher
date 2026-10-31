@@ -328,6 +328,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cloudSavesOpenBackups: (gameUrl: string) => ipcRenderer.invoke('cloud-saves-open-backups', { gameUrl }),
   cloudSavesGetHistory: (gameUrl: string, limit?: number) =>
     ipcRenderer.invoke('cloud-saves-get-history', { gameUrl, limit }),
+  cloudSavesGameOverview: (gameUrl: string) => ipcRenderer.invoke('cloud-saves-game-overview', gameUrl),
+  cloudSavesGameAddFolder: (gameUrl: string) => ipcRenderer.invoke('cloud-saves-game-add-folder', gameUrl),
+  cloudSavesGameRemoveFolder: (gameUrl: string, folder: string) =>
+    ipcRenderer.invoke('cloud-saves-game-remove-folder', gameUrl, folder),
+  cloudSavesGameBackup: (gameUrl: string) => ipcRenderer.invoke('cloud-saves-game-backup', gameUrl),
+  cloudSavesGameRestore: (gameUrl: string, fileId: string) =>
+    ipcRenderer.invoke('cloud-saves-game-restore', gameUrl, fileId),
+  cloudSavesGameExport: (gameUrl: string, fileId: string) =>
+    ipcRenderer.invoke('cloud-saves-game-export', gameUrl, fileId),
+  cloudSavesGameDeleteBackup: (gameUrl: string, fileId: string) =>
+    ipcRenderer.invoke('cloud-saves-game-delete-backup', gameUrl, fileId),
   
   onPrefixJobStatus: (cb: (data: PrefixJobStatusPayload) => void) => {
     const handler = (_event: IpcRendererEvent, data: any) => cb(data as PrefixJobStatusPayload)

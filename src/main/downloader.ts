@@ -69,11 +69,21 @@ export async function downloadFile(
 
     await new Promise<void>((resolve, reject) => {
       res.data.on('error', reject)
+      res.data.on('aborted', () => reject(new Error('HTTP download stream aborted')))
+      res.data.on('close', () => {
+        if (!res.data.complete) reject(new Error('HTTP download stream closed before completion'))
+      })
       writer?.on('finish', resolve)
       writer?.on('error', reject)
       res.data.pipe(writer as fs.WriteStream)
     })
 
+    // Do not promote a truncated .part to a complete archive.
+    const receivedSize = fs.statSync(partialPath).size
+    if (total > 0 && (loaded !== total || receivedSize !== total)) {
+      throw new Error(`Incomplete HTTP download: expected ${total} bytes, received ${receivedSize}`)
+    }
+    if (receivedSize === 0) throw new Error('HTTP download returned an empty file')
     try { fs.rmSync(destPath, { force: true }) } catch {}
     fs.renameSync(partialPath, destPath)
     if (onProgress && total > 0) {

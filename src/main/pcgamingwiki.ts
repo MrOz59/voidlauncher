@@ -342,3 +342,42 @@ export async function getWinePrefixSavePaths(options: {
 
   return windowsPaths
 }
+
+/**
+ * Resolve PCGamingWiki save folders on native Windows, not a Wine prefix.
+ * Unknown placeholders are rejected rather than used as literal directories.
+ */
+export async function getWindowsNativeSavePaths(options: {
+  steamAppId?: string
+  title?: string
+  gameInstallPath?: string
+}): Promise<string[]> {
+  if (process.platform !== 'win32') return []
+  const home = process.env.USERPROFILE || ''
+  const paths = await getSaveLocations(options)
+  const tokens: Record<string, string> = {
+    '%USERPROFILE%': home,
+    '%APPDATA%': process.env.APPDATA || '',
+    '%LOCALAPPDATA%': process.env.LOCALAPPDATA || '',
+    '%PUBLIC%': process.env.PUBLIC || '',
+    '%PROGRAMDATA%': process.env.PROGRAMDATA || '',
+    '%PROGRAMFILES%': process.env.ProgramFiles || '',
+    '%PROGRAMFILES(X86)%': process.env['ProgramFiles(x86)'] || '',
+    '%WINDIR%': process.env.WINDIR || '',
+    '<GAME>': options.gameInstallPath || '',
+    '<USERNAME>': process.env.USERNAME || ''
+  }
+  const results = new Set<string>()
+  for (const item of paths) {
+    if (item.platform.toLowerCase() !== 'windows') continue
+    let p = item.path
+    for (const [token, value] of Object.entries(tokens)) {
+      p = p.split(token).join(value)
+    }
+    if (!p || /[<>%]/.test(p)) continue
+    const resolved = path.win32.normalize(p)
+    if (!path.win32.isAbsolute(resolved)) continue
+    results.add(resolved)
+  }
+  return [...results]
+}

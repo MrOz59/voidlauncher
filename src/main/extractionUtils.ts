@@ -42,10 +42,12 @@ function mergeMoveEntry(srcPath: string, destPath: string) {
         try { fs.rmSync(srcPath, { force: true }) } catch {}
       } catch (err) {
         console.warn('[mergeMoveEntry] Failed to move', srcPath, '->', destPath, err)
+        throw err
       }
     }
   } catch (err) {
     console.warn('[mergeMoveEntry] Error', srcPath, '->', destPath, err)
+    throw err
   }
 }
 
@@ -57,7 +59,8 @@ function flattenSingleSubdir(basePath: string) {
     if (entries.length !== 1 || !entries[0].isDirectory()) return
 
     // Never flatten Unity _Data folders - they must stay next to the executable
-    if (entries[0].name.endsWith('_Data')) return
+    if (entries[0].name.endsWith('_Data') ||
+        /^(Engine|Content|Binaries|Plugins|Data|Resources|StreamingAssets|Managed|MonoBleedingEdge)$/i.test(entries[0].name)) return
 
     const subDir = path.join(basePath, entries[0].name)
     const subEntries = fs.readdirSync(subDir, { withFileTypes: true })
@@ -77,6 +80,7 @@ function flattenSingleSubdir(basePath: string) {
     console.log('[flattenSingleSubdir] Flattened nested folder:', subDir)
   } catch (err) {
     console.warn('[flattenSingleSubdir] Error while flattening', basePath, err)
+    throw err
   }
 }
 
@@ -445,22 +449,13 @@ export async function processUpdateExtraction(
       })
       console.log('[UpdateProcessor] Extraction completed for:', rarFile)
 
-      flattenSingleSubdir(installPath)
-      flattenDominantSubdir(installPath)
+      // Moving an arbitrary "dominant" subdirectory can break Engine/ and
+      // Content/ layouts. Only unwrap a single, safe wrapper folder.
       flattenSingleSubdir(installPath)
 
-      for (const partPath of group.all) {
-        try {
-          if (fs.existsSync(partPath)) {
-            fs.unlinkSync(partPath)
-            console.log('[UpdateProcessor] Removed RAR file:', partPath)
-          }
-        } catch (err) {
-          if ((err as any)?.code !== 'ENOENT') {
-            console.warn('[UpdateProcessor] Failed to remove RAR file:', partPath, err)
-          }
-        }
-      }
+      // Keep every source archive until the caller has validated the final
+      // game and committed installation metadata. Deleting here makes retry
+      // impossible if a later archive fails or an EXE is missing.
 
       const rarDir = path.dirname(rarFile)
       const fixRepairPath = path.join(rarDir, 'Fix Repair')
@@ -490,11 +485,8 @@ export async function processUpdateExtraction(
             fs.rmdirSync(rarDir)
             console.log('[UpdateProcessor] Removed empty folder:', rarDir)
           } else {
-            const onlyJunk = remainingFiles.every(f => f.toLowerCase().includes('fix repair') || /\.(rar|zip|7z)$/i.test(f))
-            if (onlyJunk) {
-              fs.rmSync(rarDir, { recursive: true, force: true })
-              console.log('[UpdateProcessor] Force removed junk folder:', rarDir)
-            }
+            // Archives and Fix Repair files may be needed for retry/debugging.
+            // Never delete an archive directory based on filename heuristics.
           }
         } catch (err) {
           // Folder not empty or other error, ignore
@@ -503,30 +495,9 @@ export async function processUpdateExtraction(
     } catch (err: any) {
       console.error('[UpdateProcessor] Failed to extract:', rarFile, err)
       
-      // Clean up corrupted/failed archive files to avoid leaving garbage behind
-      // This helps users re-download cleanly without manual intervention
-      console.log('[UpdateProcessor] Cleaning up failed extraction archives...')
-      for (const partPath of group.all) {
-        try {
-          if (fs.existsSync(partPath)) {
-            fs.unlinkSync(partPath)
-            console.log('[UpdateProcessor] Removed failed archive:', partPath)
-          }
-        } catch (cleanupErr) {
-          console.warn('[UpdateProcessor] Could not remove failed archive:', partPath, cleanupErr)
-        }
-      }
-      
-      // Also clean up Fix Repair folder if present
-      const rarDir = path.dirname(rarFile)
-      const fixRepairPath = path.join(rarDir, 'Fix Repair')
-      if (fs.existsSync(fixRepairPath)) {
-        try {
-          fs.rmSync(fixRepairPath, { recursive: true, force: true })
-          console.log('[UpdateProcessor] Removed Fix Repair folder after failed extraction')
-        } catch {}
-      }
-      
+      // Preserve the failed RAR and its multipart segments for a retry.
+      // In particular, deleting them here made the next attempt see zero
+      // archives and incorrectly report successful installation.
       return { success: false, error: `Failed to extract ${path.basename(rarFile)}: ${err.message}` }
     }
   }
@@ -563,7 +534,7 @@ export async function processUpdateExtraction(
   // Final validation
   const fileCount = countFilesRecursive(installPath, 100)
   if (fileCount === 0) {
-    warnings.push('No files found after extraction - installation may be incomplete')
+    return { success: false, error: 'No game files found after extraction' }
   } else if (fileCount < 5) {
     warnings.push(`Very few files (${fileCount}) found after extraction`)
   }

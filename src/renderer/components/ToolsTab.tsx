@@ -131,10 +131,12 @@ export default function ToolsTab() {
     }
   }
 
-  const loadReleases = async (force = false) => {
+  const loadReleases = async (force = false, linuxPlatform = status?.isLinux === true) => {
     setReleaseLoading(true)
     try {
-      const keys: ToolKey[] = ['proton-ge', 'proton-cachyos', 'legendary', 'ludusavi']
+      const keys: ToolKey[] = linuxPlatform
+        ? ['proton-ge', 'proton-cachyos', 'legendary', 'ludusavi']
+        : ['legendary', 'ludusavi']
       const errors: string[] = []
       const results = await Promise.all(keys.map(async key => {
         const res = await window.electronAPI.listToolReleases(key, 12, force)
@@ -151,8 +153,26 @@ export default function ToolsTab() {
   }
 
   useEffect(() => {
-    loadStatus()
-    loadReleases()
+    let mounted = true
+    ;(async () => {
+      let linuxPlatform = false
+      try {
+        const res = await window.electronAPI.getToolsStatus()
+        if (!mounted) return
+        if (res.success) {
+          setStatus(res.status || null)
+          linuxPlatform = res.status?.isLinux === true
+        } else {
+          setMessage(ipcErrorText(t, res, t('tools.statusFailed')))
+        }
+      } catch (err: any) {
+        if (mounted) setMessage(err?.message || String(err))
+      } finally {
+        if (mounted) setLoading(false)
+      }
+      if (mounted) await loadReleases(false, linuxPlatform)
+    })()
+    return () => { mounted = false }
   }, [])
 
   const runAction = async (key: string, action: () => Promise<any>) => {
@@ -343,7 +363,7 @@ export default function ToolsTab() {
           <p>{t('tools.subtitle')}</p>
         </div>
         <div className="settings-btn-row">
-          <button className="settings-btn secondary" onClick={() => { loadStatus(); loadReleases(true) }} disabled={loading || releaseLoading || !!busy}>
+          <button className="settings-btn secondary" onClick={() => { loadStatus(); loadReleases(true, status?.isLinux === true) }} disabled={loading || releaseLoading || !!busy}>
             <RefreshCw size={14} className={loading || releaseLoading ? 'of-spin' : ''} />
             {t('common.refresh')}
           </button>
@@ -357,6 +377,7 @@ export default function ToolsTab() {
         </div>
       ) : null}
 
+      {status?.isLinux === true && (
       <div className="settings-section">
         <div className="settings-section-header">
           <Package size={18} />
@@ -438,6 +459,7 @@ export default function ToolsTab() {
           </div>
         </div>
       </div>
+      )}
 
       <div className="settings-section">
         <div className="settings-section-header">
@@ -481,7 +503,7 @@ export default function ToolsTab() {
             {renderReleaseList('ludusavi')}
           </div>
 
-          {renderEosOverlayCard()}
+          {status?.isLinux === true && renderEosOverlayCard()}
         </div>
       </div>
     </div>

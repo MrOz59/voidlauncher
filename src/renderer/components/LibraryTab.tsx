@@ -479,6 +479,12 @@ export default function LibraryTab() {
     vpn.resetState()
   }, [gameConfig, onlineFixIni, vpn])
 
+  // Open saves directly from the game card action menu.
+  const openSavesModal = useCallback((game: Game) => {
+    openConfigModal(game)
+    gameConfig.setConfigTab('saves')
+  }, [openConfigModal, gameConfig.setConfigTab])
+
   // Close config modal
   const closeConfigModal = useCallback(() => {
     gameConfig.closeConfig()
@@ -803,6 +809,7 @@ export default function LibraryTab() {
             onToggleActionMenu={() => setOpenActionMenuGameUrl(cur => cur === game.url ? null : game.url)}
             onCloseActionMenu={() => setOpenActionMenuGameUrl(null)}
             onOpenConfig={() => openConfigModal(game)}
+            onOpenSaves={() => openSavesModal(game)}
             onToggleFavorite={() => toggleFavorite(game.url)}
             onOpenFolder={() => openGameFolder(game)}
             onUpdate={() => updateGame(game)}

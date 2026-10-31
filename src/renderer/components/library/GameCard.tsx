@@ -17,6 +17,7 @@ export interface GameCardProps {
   onToggleActionMenu: () => void
   onCloseActionMenu: () => void
   onOpenConfig: () => void
+  onOpenSaves: () => void
   onToggleFavorite: () => void
   onOpenFolder: () => void
   onUpdate: () => void
@@ -61,6 +62,7 @@ export function GameCard({
   onToggleActionMenu,
   onCloseActionMenu,
   onOpenConfig,
+  onOpenSaves,
   onToggleFavorite,
   onOpenFolder,
   onUpdate,
@@ -252,6 +254,11 @@ export function GameCard({
                 <button className="action-menu-item" onClick={() => { onCloseActionMenu(); onOpenConfig() }}>
                   <Settings size={16} />
                   <span>{t('library.card.settings')}</span>
+                </button>
+
+                <button className="action-menu-item" onClick={() => { onCloseActionMenu(); onOpenSaves() }}>
+                  <Cloud size={16} />
+                  <span>{t('library.saves.tab')}</span>
                 </button>
 
                 <button className="action-menu-item" onClick={() => { onCloseActionMenu(); onToggleFavorite() }}>

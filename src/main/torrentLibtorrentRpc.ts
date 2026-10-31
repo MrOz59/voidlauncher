@@ -908,6 +908,13 @@ export async function downloadTorrent(
         }
         onProgress?.(normalizedProgress, details)
 
+        // The agent can report 100% while also reporting an I/O or disk error.
+        const agentError = String(st?.errorMessage || '').trim()
+        if (agentError) {
+          settle(new Error(`Torrent agent error: ${agentError}`))
+          return
+        }
+
         const done = Boolean(st?.isFinished) || (total > 0 && downloaded >= total)
         if (done) {
           try { await rpc.call('pause', { torrentId: infoHash }) } catch {}
