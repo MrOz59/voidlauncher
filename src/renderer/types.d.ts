@@ -393,6 +393,13 @@ declare global {
       onCloudSavesStatus: (cb: (data: CloudSavesStatusPayload) => void) => (() => void)
       cloudSavesOpenBackups: (gameUrl: string) => Promise<{ success: boolean; error?: string }>
       cloudSavesGetHistory: (gameUrl: string, limit?: number) => Promise<{ success: boolean; entries?: any[]; error?: string }>
+      cloudSavesGameOverview: (gameUrl: string) => Promise<{ success: boolean; overview?: any; error?: string }>
+      cloudSavesGameAddFolder: (gameUrl: string) => Promise<{ success: boolean; canceled?: boolean; message?: string; error?: string }>
+      cloudSavesGameRemoveFolder: (gameUrl: string, folder: string) => Promise<{ success: boolean; message?: string; error?: string }>
+      cloudSavesGameBackup: (gameUrl: string) => Promise<{ success: boolean; message?: string; error?: string }>
+      cloudSavesGameRestore: (gameUrl: string, fileId: string) => Promise<{ success: boolean; skipped?: boolean; message?: string; error?: string }>
+      cloudSavesGameExport: (gameUrl: string, fileId: string) => Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>
+      cloudSavesGameDeleteBackup: (gameUrl: string, fileId: string) => Promise<{ success: boolean; canceled?: boolean; error?: string }>
 
       // Navigation events from tray menu
       onNavigateToTab: (cb: (tab: string) => void) => (() => void)
