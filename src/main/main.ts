@@ -973,8 +973,34 @@ async function prepareGamePrefixAfterInstall(gameUrl: string, title: string, ins
   return job
 }
 
-async function notifyGameReadyAfterInstall(gameUrl: string, title: string, installPath: string, _firstInstall = true) {
+async function notifyGameReadyAfterInstall(gameUrl: string, title: string, installPath: string, firstInstall = true) {
   const prefixReady = await prepareGamePrefixAfterInstall(gameUrl, title, installPath)
+  // On first installation, locate existing native/Proton saves and compare
+  // against the Drive snapshot before the first game launch. Never restore
+  // over local data without an explicit choice and a recovery copy.
+  if (firstInstall && prefixReady && drive.isCloudSavesEnabled()) {
+    try {
+      const game = getGame(gameUrl) as any
+      const result = await cloudSaves.restoreCloudSavesBeforeLaunch({
+        gameUrl, title,
+        steamAppId: game?.steam_app_id || null,
+        protonPrefix: game?.proton_prefix || null,
+        gameInstallPath: installPath
+      })
+      const key = cloudSaves.computeCloudSavesGameKey({
+        gameUrl, title, steamAppId: game?.steam_app_id || null
+      })
+      const payload = {
+        at: Date.now(), gameUrl, gameKey: key, stage: 'restore' as const,
+        level: (result.success ? (result.skipped ? 'info' : 'success') : 'warning') as 'info' | 'success' | 'warning',
+        message: String(result.message || (result.success ? 'Verificação de saves concluída.' : 'Verificação de saves falhou.'))
+      }
+      try { appendCloudSavesHistory(payload) } catch {}
+      try { mainWindow?.webContents.send('cloud-saves-status', payload) } catch {}
+    } catch (err) {
+      console.warn('[CloudSaves] Post-install save check failed:', err)
+    }
+  }
   if (!prefixReady) return
 
   try {
