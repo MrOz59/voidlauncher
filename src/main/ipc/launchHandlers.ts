@@ -764,23 +764,17 @@ export const registerLaunchHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => 
           gameUrl,
           title: game.title,
           steamAppId: game.steam_app_id || null,
-          protonPrefix: game.proton_prefix || null
+          protonPrefix: game.proton_prefix || null,
+          gameInstallPath: installDir
         })
         if (!restoreRes?.success || (restoreRes as any)?.skipped) {
           console.warn('[CloudSaves] restore reported non-success:', restoreRes)
           const msg = String(restoreRes?.message || 'Sem restore (usando saves locais).')
           recordCloudSaves({ at: Date.now(), gameKey, gameUrl, stage: 'restore', level: 'info', message: msg })
           sendCloudSavesStatus({ at: Date.now(), gameUrl, gameKey, stage: 'restore', level: 'info', message: msg })
-          if (drive.isCloudSavesEnabled()) {
-            const syncRes = await drive.syncSavesOnPlayStart({
-              protonPrefix: game.proton_prefix,
-              installPath: installDir,
-              realAppId: game.steam_app_id || undefined
-            })
-            if (syncRes && !(syncRes as any).success) {
-              console.warn('[DriveSync] sync reported non-success:', syncRes)
-            }
-          }
+          // Do not fall back to the legacy restore path: it has no reliable
+          // per-save timestamps or complete backup metadata and must not
+          // second-guess a user decision to keep local saves.
         } else {
           const msg = String(restoreRes?.message || 'Saves restaurados da nuvem.')
           recordCloudSaves({ at: Date.now(), gameKey, gameUrl, stage: 'restore', level: 'success', message: msg })
