@@ -516,6 +516,62 @@ async function detectPCGamingWikiSaves(
 /**
  * Main detection function - tries all methods and returns best results
  */
+/**
+ * Native Windows saves are outside Proton prefixes. Keep the search narrowly
+ * scoped to this game's title/Steam ID instead of backing up unrelated files
+ * from the user's AppData or Documents directories.
+ */
+function detectWindowsSaveLocations(options: SaveDetectorOptions): DetectedSaveLocation[] {
+  if (process.platform !== 'win32') return []
+  const title = String(options.gameTitle || '').trim()
+  const appId = String(options.steamAppId || '').trim()
+  const home = process.env.USERPROFILE || process.env.HOME || ''
+  const roaming = process.env.APPDATA || (home ? path.join(home, 'AppData', 'Roaming') : '')
+  const local = process.env.LOCALAPPDATA || (home ? path.join(home, 'AppData', 'Local') : '')
+  const documents = home ? path.join(home, 'Documents') : ''
+  const savedGames = home ? path.join(home, 'Saved Games') : ''
+  const candidates: Array<{ path: string; type: DetectedSaveLocation['type'] }> = []
+
+  // Windows directory names often strip punctuation from the store title.
+  const variations = Array.from(new Set([
+    title,
+    title.replace(/[<>:"/\\|?*]/g, '').trim(),
+    title.replace(/[^a-z0-9]/gi, ''),
+    title.replace(/\s+/g, ''),
+  ].filter(Boolean)))
+  for (const name of variations) {
+    if (roaming) candidates.push({ path: path.join(roaming, name), type: 'appdata_roaming' })
+    if (local) {
+      candidates.push({ path: path.join(local, name, 'Saved', 'SaveGames'), type: 'unreal' })
+      candidates.push({ path: path.join(local, name), type: 'appdata_local' })
+    }
+    if (documents) {
+      candidates.push({ path: path.join(documents, 'My Games', name), type: 'documents' })
+      candidates.push({ path: path.join(documents, name), type: 'documents' })
+    }
+    if (savedGames) candidates.push({ path: path.join(savedGames, name), type: 'saved_games' })
+  }
+  if (documents && /^\d+$/.test(appId)) {
+    candidates.push({ path: path.join(documents, 'OnlineFix', appId, 'Saves'), type: 'onlinefix' })
+  }
+
+  const seen = new Set<string>()
+  return candidates.filter(item => {
+    const key = path.normalize(item.path).toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    try {
+      return fs.statSync(item.path).isDirectory() && hasSaveFiles(item.path)
+    } catch {
+      return false
+    }
+  }).map(item => ({
+    path: item.path, type: item.type, confidence: 'medium' as const,
+    gameName: title || undefined, steamAppId: appId || undefined,
+    source: 'windows-native'
+  }))
+}
+
 export function detectSaveLocations(options: SaveDetectorOptions): DetectedSaveLocation[] {
   const results: DetectedSaveLocation[] = []
   const { winePrefix, gameInstallPath, gameTitle, steamAppId } = options
@@ -537,6 +593,9 @@ export function detectSaveLocations(options: SaveDetectorOptions): DetectedSaveL
     results.push(...detectSavedGamesSaves(winePrefix, gameTitle))
   }
   
+  // Native Windows saves may be in AppData, Documents, or Saved Games.
+  results.push(...detectWindowsSaveLocations(options))
+
   // Game folder
   results.push(...detectGameFolderSaves(gameInstallPath))
   
