@@ -25,7 +25,15 @@ export function isValidBackupZip(filePath: string): boolean {
     const tailSize = Math.min(st.size, 65557)
     const tail = Buffer.alloc(tailSize)
     fs.readSync(handle, tail, 0, tailSize, st.size - tailSize)
-    return tail.includes(Buffer.from([0x50, 0x4b, 0x05, 0x06]))
+    const eocd = tail.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]))
+    if (eocd < 0 || eocd + 22 > tail.length) return false
+    const entries = tail.readUInt16LE(eocd + 10)
+    const directorySize = tail.readUInt32LE(eocd + 12)
+    const directoryOffset = tail.readUInt32LE(eocd + 16)
+    if (entries === 0) return false // A ZIP with zero entries is not a save backup.
+    if (directorySize !== 0xffffffff && directoryOffset !== 0xffffffff &&
+        directoryOffset + directorySize > st.size) return false
+    return true
   } catch {
     return false
   } finally {
