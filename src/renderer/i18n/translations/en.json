@@ -1024,5 +1024,8 @@
   "library.saves.safety": "Close the game before restoring. A local recovery copy is required before overwriting saves. Deleting cloud backups never deletes local saves.",
   "library.saves.actionFailed": "Save action failed.",
   "library.saves.actionComplete": "Done.",
-  "library.saves.loadError": "Unable to load save information."
+  "library.saves.loadError": "Unable to load save information.",
+  "library.saves.addFolder": "Add save folder",
+  "library.saves.customFolders": "Manually configured folders",
+  "library.saves.removeFolderHint": "Stop monitoring this directory for this game. No files will be deleted."
 }
