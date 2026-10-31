@@ -260,6 +260,7 @@ export type GameSaveOverview = {
     path: string; type: string; confidence: string; fileCount: number; modifiedMs: number | null
   }> }
   backups: GameSaveBackup[]
+  customLocations: string[]
   recommendation: 'restore' | 'local' | 'ask' | 'none'
 }
 
@@ -325,6 +326,7 @@ export async function getGameSaveOverview(opts: CloudSaveSyncOptions): Promise<G
       }))
     },
     backups,
+    customLocations: getCustomSaveLocations(gameKey),
     recommendation: chooseSafeSaveAction(
       { exists: local.exists, modifiedMs: local.modifiedMs },
       { exists: !!newest, modifiedMs: newest?.saveModifiedMs || null }
