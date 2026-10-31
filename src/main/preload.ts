@@ -329,6 +329,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cloudSavesGetHistory: (gameUrl: string, limit?: number) =>
     ipcRenderer.invoke('cloud-saves-get-history', { gameUrl, limit }),
   cloudSavesGameOverview: (gameUrl: string) => ipcRenderer.invoke('cloud-saves-game-overview', gameUrl),
+  cloudSavesGameAddFolder: (gameUrl: string) => ipcRenderer.invoke('cloud-saves-game-add-folder', gameUrl),
+  cloudSavesGameRemoveFolder: (gameUrl: string, folder: string) =>
+    ipcRenderer.invoke('cloud-saves-game-remove-folder', gameUrl, folder),
   cloudSavesGameBackup: (gameUrl: string) => ipcRenderer.invoke('cloud-saves-game-backup', gameUrl),
   cloudSavesGameRestore: (gameUrl: string, fileId: string) =>
     ipcRenderer.invoke('cloud-saves-game-restore', gameUrl, fileId),
