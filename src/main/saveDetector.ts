@@ -530,6 +530,13 @@ function detectWindowsSaveLocations(options: SaveDetectorOptions): DetectedSaveL
   const local = process.env.LOCALAPPDATA || (home ? path.join(home, 'AppData', 'Local') : '')
   const documents = home ? path.join(home, 'Documents') : ''
   const savedGames = home ? path.join(home, 'Saved Games') : ''
+  const localLow = home ? path.join(home, 'AppData', 'LocalLow') : ''
+  const documentsRoots = Array.from(new Set([
+    documents,
+    process.env.OneDrive ? path.join(process.env.OneDrive, 'Documents') : '',
+    process.env.OneDriveConsumer ? path.join(process.env.OneDriveConsumer, 'Documents') : '',
+    process.env.OneDriveCommercial ? path.join(process.env.OneDriveCommercial, 'Documents') : ''
+  ].filter(Boolean)))
   const candidates: Array<{ path: string; type: DetectedSaveLocation['type'] }> = []
 
   // Windows directory names often strip punctuation from the store title.
@@ -545,14 +552,45 @@ function detectWindowsSaveLocations(options: SaveDetectorOptions): DetectedSaveL
       candidates.push({ path: path.join(local, name, 'Saved', 'SaveGames'), type: 'unreal' })
       candidates.push({ path: path.join(local, name), type: 'appdata_local' })
     }
-    if (documents) {
-      candidates.push({ path: path.join(documents, 'My Games', name), type: 'documents' })
-      candidates.push({ path: path.join(documents, name), type: 'documents' })
+    for (const docRoot of documentsRoots) {
+      candidates.push({ path: path.join(docRoot, 'My Games', name), type: 'documents' })
+      candidates.push({ path: path.join(docRoot, name), type: 'documents' })
     }
     if (savedGames) candidates.push({ path: path.join(savedGames, name), type: 'saved_games' })
   }
-  if (documents && /^\d+$/.test(appId)) {
-    candidates.push({ path: path.join(documents, 'OnlineFix', appId, 'Saves'), type: 'onlinefix' })
+  if (/^\d+$/.test(appId)) {
+    for (const docRoot of documentsRoots) {
+      candidates.push({ path: path.join(docRoot, 'OnlineFix', appId, 'Saves'), type: 'onlinefix' })
+    }
+    // Native Steam games can write into Steam/userdata/<account>/<appId>/remote.
+    const steamRoots = Array.from(new Set([
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Steam', 'userdata'),
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Steam', 'userdata')
+    ]))
+    for (const root of steamRoots) {
+      try {
+        for (const user of fs.readdirSync(root, { withFileTypes: true })) {
+          if (user.isDirectory() && /^\d+$/.test(user.name)) {
+            candidates.push({ path: path.join(root, user.name, appId, 'remote'), type: 'saved_games' })
+          }
+        }
+      } catch {}
+    }
+  }
+  // Unity frequently stores saves under LocalLow/<publisher>/<game>.
+  if (localLow && variations.length) {
+    try {
+      const accepted = new Set(variations.map(v => v.replace(/[^a-z0-9]/gi, '').toLowerCase()))
+      for (const publisher of fs.readdirSync(localLow, { withFileTypes: true })) {
+        if (!publisher.isDirectory()) continue
+        const root = path.join(localLow, publisher.name)
+        for (const item of fs.readdirSync(root, { withFileTypes: true })) {
+          if (item.isDirectory() && accepted.has(item.name.replace(/[^a-z0-9]/gi, '').toLowerCase())) {
+            candidates.push({ path: path.join(root, item.name), type: 'unity' })
+          }
+        }
+      }
+    } catch {}
   }
 
   const seen = new Set<string>()
@@ -561,7 +599,8 @@ function detectWindowsSaveLocations(options: SaveDetectorOptions): DetectedSaveL
     if (seen.has(key)) return false
     seen.add(key)
     try {
-      return fs.statSync(item.path).isDirectory() && hasSaveFiles(item.path)
+      return fs.statSync(item.path).isDirectory() &&
+        (hasSaveFiles(item.path) || getFolderStats(item.path, 4).saveFileCount > 0)
     } catch {
       return false
     }
