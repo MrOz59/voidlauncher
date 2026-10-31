@@ -78,7 +78,7 @@ import { shouldBlockRequest } from './easylist-filters.js'
 import { initializeStoreAdBlocker } from './storeAdBlocker.js'
 import { registerStoreImageProtocol, registerStoreImageScheme } from './store/imageProxy.js'
 import { clearStoreCache } from './store/catalog.js'
-import { startGameDownload, pauseDownloadByTorrentId, resumeDownloadByTorrentId, cancelDownloadByTorrentId, parseVersionFromName, processUpdateExtraction, readOnlineFixIni, writeOnlineFixIni, normalizeGameInstallDir, reconcileDownloadState, hasExistingGameInstall } from './downloadManager.js'
+import { startGameDownload, pauseDownloadByTorrentId, resumeDownloadByTorrentId, cancelDownloadByTorrentId, parseVersionFromName, processUpdateExtraction, readOnlineFixIni, writeOnlineFixIni, normalizeGameInstallDir, validateGameInstall, isDownloadInstallFinalized, reconcileDownloadState, hasExistingGameInstall } from './downloadManager.js'
 import axios from 'axios'
 import { resolveTorrentFileUrl, deriveTitleFromTorrentUrl } from './torrentResolver.js'
 // fs is already imported at the top for early sandbox configuration
@@ -1125,7 +1125,7 @@ async function handleExternalDownload(url: string) {
       })
     })
     const completed = getDownloadByUrl(torrentUrl) as { info_hash?: string; dest_path?: string | null } | undefined
-    if (completed || result.installPath) {
+    if (result.success && result.installPath) {
       mainWindow?.webContents.send('download-complete', {
         magnet: torrentUrl,
         infoHash: completed?.info_hash || undefined,
@@ -1632,36 +1632,6 @@ async function resumeActiveDownloads() {
     if (!active.length) return
     console.log(`[Launcher] Resuming ${active.length} downloads from previous session`)
 
-    const looksInstalled = (installPath: string): boolean => {
-      const p = String(installPath || '').trim()
-      if (!p) return false
-      const abs = path.isAbsolute(p) ? p : path.resolve(process.cwd(), p)
-      try {
-        if (!fs.existsSync(abs)) return false
-        const st = fs.statSync(abs)
-        if (!st.isDirectory()) return false
-      } catch {
-        return false
-      }
-
-      // Prefer sentinel markers written by our extraction flows.
-      const sentinels = ['.of_extracted', '.of_update_extracted', '.of_game.json']
-      for (const s of sentinels) {
-        try {
-          if (fs.existsSync(path.join(abs, s))) return true
-        } catch {
-          // ignore
-        }
-      }
-
-      // Fallback heuristic: at least one .exe inside the install dir.
-      try {
-        return !!findExecutableInDir(abs)
-      } catch {
-        return false
-      }
-    }
-
     const finalizeAsCompleted = (d: any, gameUrl: string, installPath: string) => {
       const downloadId = Number(d?.id)
       const idKey = String(d?.info_hash || d?.download_url || d?.id || '')
@@ -1694,30 +1664,8 @@ async function resumeActiveDownloads() {
       }
     }
 
-    const hasCompletionMarker = (d: any, installPath: string): boolean => {
-      const p = String(installPath || '').trim()
-      if (!p) return false
-      const abs = path.isAbsolute(p) ? p : path.resolve(process.cwd(), p)
-      const createdAt = d?.created_at ? new Date(d.created_at).getTime() : 0
-      for (const marker of ['.of_extracted', '.of_update_extracted']) {
-        try {
-          const markerPath = path.join(abs, marker)
-          if (!fs.existsSync(markerPath)) continue
-          if (!createdAt) return true
-          const markerTime = fs.statSync(markerPath).mtimeMs
-          if (markerTime >= createdAt - 1000) return true
-        } catch {
-          // ignore
-        }
-      }
-      return false
-    }
-
-    const shouldFinalizeInterruptedDownload = (d: any, installPath: string): boolean => {
-      const progress = Number(d?.progress || 0)
-      if (hasCompletionMarker(d, installPath)) return true
-      return progress >= 99.5 && looksInstalled(installPath)
-    }
+    const shouldFinalizeInterruptedDownload = (download: any, installPath: string): boolean =>
+      isDownloadInstallFinalized(download, installPath)
 
     const seen = new Set<string>()
     for (const d of active) {
@@ -1860,7 +1808,7 @@ async function reconcileInstalledGamesFromCompletedDownloads() {
       const installPath = String(d?.install_path || '').trim()
       if (!gameUrl || !installPath) continue
       try {
-        if (!fs.existsSync(installPath)) continue
+        if (!isDownloadInstallFinalized(d, installPath)) continue
       } catch {
         continue
       }
@@ -2331,7 +2279,12 @@ async function resumeInterruptedExtractions() {
         try { fs.writeFileSync(path.join(installPath, '.of_update_extracted'), String(Date.now())) } catch {}
 
         // Best-effort: normalize and mark installed.
-        try { normalizeGameInstallDir(installPath) } catch {}
+        try {
+          validateGameInstall(installPath, firstInstall)
+        } catch (validationErr: any) {
+          updateDownloadStatus(downloadId, 'error', validationErr?.message || String(validationErr))
+          continue
+        }
         try {
           const version = await resolveGameVersion({
             filename: d?.download_url,
@@ -2398,7 +2351,12 @@ async function resumeInterruptedExtractions() {
         continue
       }
 
-      try { normalizeGameInstallDir(installPath) } catch {}
+      try {
+        validateGameInstall(installPath, firstInstall)
+      } catch (validationErr: any) {
+        updateDownloadStatus(downloadId, 'error', validationErr?.message || String(validationErr))
+        continue
+      }
       try { fs.unlinkSync(marker) } catch {}
       try { fs.writeFileSync(path.join(installPath, '.of_extracted'), String(Date.now())) } catch {}
 
