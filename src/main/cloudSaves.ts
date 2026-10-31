@@ -566,39 +566,53 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
   ensureDir(configDir)
   ensureDir(backupDir)
 
-  const startedAt = Date.now()
   const winePrefix = guessWinePrefixFromCompatData(opts.protonPrefix)
-
-  // Try Ludusavi first
-  await ensureLudusaviAvailable({ allowDownload: true })
+  const knownInstall = String(opts.gameInstallPath ||
+    (opts.gameUrl ? (getGame(opts.gameUrl) as any)?.install_path : '') || '').trim()
   const bin = await resolveLudusaviBinary()
-  const resolvedName = bin ? await resolveLudusaviGameName({ steamId: opts.steamAppId, title: opts.title }) : null
+  const resolvedName = bin ? await resolveLudusaviGameName({
+    steamId: opts.steamAppId, title: opts.title
+  }) : null
+  const local = await inspectLocalSaves(opts, configDir, backupDir, resolvedName, winePrefix)
+  const remote = await getNewestRemoteForGameKey(gameKey)
+  const remoteSaveAt = Number(remote?.appProperties?.voidSaveMtime || 0)
+  const remoteIsNewer = !!remote && (
+    !local.modifiedMs || !Number.isFinite(remoteSaveAt) || remoteSaveAt <= 0 ||
+    remoteSaveAt > local.modifiedMs + 30_000
+  )
 
   let zipPath: string | null = null
   let usedHeuristic = false
-  let remoteIsNewer = false
 
+  // Save the entire Ludusavi game directory (mapping.yaml + ZIP data).
+  // A standalone archive inside it is not a restorable Ludusavi backup.
   if (bin && resolvedName) {
-    // Compare live local state vs remote before uploading, to avoid overwriting newer cloud saves.
-    const localStateMs = await getLocalSaveStateMsViaPreview({ configDir, backupDir, gameName: resolvedName, winePrefix })
-    const remote = await getNewestRemoteForGameKey(gameKey)
-    const remoteMs = parseDriveModifiedTimeMs(remote?.modifiedTime)
-    remoteIsNewer = localStateMs != null && remoteMs != null && remoteMs > localStateMs + 30_000
-
-    const backupRes = await ludusaviBackupOne({ configDir, backupDir, gameName: resolvedName, winePrefix })
-    if (backupRes.ok) {
-      zipPath = newestZipInDir(backupDir, startedAt - 5000)
+    const snapshotRoot = fs.mkdtempSync(path.join(app.getPath('temp'), 'void-ludusavi-backup-'))
+    try {
+      const result = await ludusaviBackupOne({
+        configDir, backupDir: snapshotRoot, gameName: resolvedName, winePrefix
+      })
+      if (result.ok && hasLudusaviMapping(snapshotRoot)) {
+        const filename = `bundle_${Date.now()}.zip`
+        zipPath = await makeSaveBundle(snapshotRoot, path.join(backupDir, filename), {
+          version: 2,
+          format: 'ludusavi-bundle',
+          platform: process.platform,
+          gameKey,
+          gameTitle: opts.title || resolvedName,
+          steamAppId: opts.steamAppId || null
+        })
+      } else {
+        console.warn('[CloudSaves] Ludusavi did not create a complete restorable snapshot', result.stderr)
+      }
+    } catch (err) {
+      console.warn('[CloudSaves] Cannot bundle Ludusavi snapshot:', err)
+    } finally {
+      try { fs.rmSync(snapshotRoot, { recursive: true, force: true }) } catch {}
     }
-    
-    if (!zipPath) {
-      console.log('[CloudSaves] Ludusavi backup produced no zip, trying heuristic detection...')
-    }
-  } else {
-    console.log('[CloudSaves] Ludusavi unavailable or game not found, trying heuristic detection...')
   }
 
   // Fallback to heuristic detection. Native Windows games have no wine prefix.
-  const knownInstall = String(opts.gameInstallPath || (opts.gameUrl ? (getGame(opts.gameUrl) as any)?.install_path : '') || '').trim()
   if (!zipPath && (winePrefix || process.platform === 'win32' || knownInstall)) {
     console.log('[CloudSaves] Using heuristic save detection (includes PCGamingWiki lookup)...')
     
@@ -631,28 +645,40 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
   }
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-')
-  // Never automatically restore heuristic archives through Ludusavi, and do
-  // not overwrite a newer remote main snapshot with older local save data.
-  const prefix = usedHeuristic ? remoteHeuristicPrefixForGame(gameKey)
-    : remoteIsNewer ? remoteConflictPrefixForGame(gameKey) : remotePrefixForGame(gameKey)
+  const format = usedHeuristic ? 'heuristic-bundle' : 'ludusavi-bundle'
+  const role = remoteIsNewer ? 'conflict' : 'main'
+  const prefix = usedHeuristic
+    ? (remoteIsNewer ? `heuristic_${gameKey}__conflict_` : remoteHeuristicPrefixForGame(gameKey))
+    : (remoteIsNewer ? remoteConflictPrefixForGame(gameKey) : remotePrefixForGame(gameKey))
   const remoteName = `${prefix}${ts}.zip`
-  const up = await drive.uploadSave(zipPath, remoteName)
+  const metadata = {
+    voidGameKey: gameKey,
+    voidGameTitle: String(opts.title || '').slice(0, 120),
+    voidSteamAppId: String(opts.steamAppId || '').slice(0, 32),
+    voidFormat: format,
+    voidRole: role,
+    voidSaveMtime: local.modifiedMs ? String(local.modifiedMs) : '',
+    voidPlatform: process.platform,
+    voidSchema: '2'
+  }
+  const up = await drive.uploadSave(zipPath, remoteName, { appProperties: metadata })
   if (!up.success) return { success: false, message: up.message || 'Falha ao enviar backup ao Drive.' }
 
-  // Prevent infinite Drive growth: keep a small history per gameKey.
+  // Only prune valid, indexed v2 backups within this game and role. Never
+  // prune legacy archives whose format cannot yet be recovered automatically.
   try {
-    await drive.pruneFilesByNamePrefix(remotePrefixForGame(gameKey), DRIVE_KEEP_MAIN_BACKUPS)
-    await drive.pruneFilesByNamePrefix(remoteConflictPrefixForGame(gameKey), DRIVE_KEEP_CONFLICT_BACKUPS)
-    await drive.pruneFilesByNamePrefix(remoteHeuristicPrefixForGame(gameKey), DRIVE_KEEP_MAIN_BACKUPS)
-    await pruneLegacyBackups(gameKey)
-  } catch {
-    // ignore pruning failures
+    const prune = await drive.pruneFilesByAppProperties({
+      voidGameKey: gameKey, voidRole: role, voidFormat: format
+    }, role === 'conflict' ? DRIVE_KEEP_CONFLICT_BACKUPS : DRIVE_KEEP_MAIN_BACKUPS)
+    if (!prune.success) console.warn('[CloudSaves] Retention failed:', prune.message)
+  } catch (err) {
+    console.warn('[CloudSaves] Drive retention error:', err)
   }
 
   const methodUsed = usedHeuristic ? 'heurística' : 'Ludusavi'
   return {
     success: true, fileId: up.id,
-    message: remoteIsNewer && !usedHeuristic
+    message: remoteIsNewer
       ? `Saves remotos mais novos; backup local via ${methodUsed} preservado separadamente como conflito.`
       : `Backup realizado via ${methodUsed}.`
   }
