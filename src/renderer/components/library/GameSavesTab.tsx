@@ -22,6 +22,8 @@ type SaveBackup = {
   restorable: boolean
 }
 
+type HistoryEntry = { at: number; stage: 'restore' | 'backup'; level: string; message: string }
+
 type Overview = {
   gameKey: string
   connected: boolean
@@ -41,6 +43,7 @@ export function GameSavesTab({ game }: { game: Game }) {
   const [data, setData] = useState<Overview | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
+  const [history, setHistory] = useState<HistoryEntry[]>([])
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
@@ -51,6 +54,12 @@ export function GameSavesTab({ game }: { game: Game }) {
       const res = await window.electronAPI.cloudSavesGameOverview(game.url)
       if (!res?.success || !res.overview) throw new Error(res?.error || t('library.saves.loadError'))
       setData(res.overview as Overview)
+      try {
+        const events = await window.electronAPI.cloudSavesGetHistory(game.url, 8) as any
+        setHistory(events.success ? (events.history || events.entries || []) : [])
+      } catch {
+        setHistory([])
+      }
     } catch (err: any) {
       setError(err?.message || String(err))
     } finally {
@@ -215,6 +224,23 @@ export function GameSavesTab({ game }: { game: Game }) {
               <p className="config-hint">{t('library.saves.safety')}</p>
             </>
           )}
+        </div>
+      </div>
+
+      <div className="config-section">
+        <div className="config-section-header">
+          <ShieldCheck size={18} />
+          <h4>{t('library.saves.history')}</h4>
+        </div>
+        <div className="config-section-content">
+          {history.length === 0 ? <p className="config-hint">{t('library.saves.noHistory')}</p> :
+            history.map((entry, index) => (
+              <div key={entry.at + ':' + index} style={{ marginBottom: 10 }}>
+                <strong>{entry.stage === 'restore' ? t('library.saves.restore') : t('library.saves.backupNow')}</strong>
+                {' • '}{displayTime(entry.at)}
+                <p className="config-hint" style={{ margin: '4px 0' }}>{entry.message}</p>
+              </div>
+            ))}
         </div>
       </div>
     </div>
