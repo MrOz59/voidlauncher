@@ -557,14 +557,30 @@ export async function downloadSave(fileId: string, destPath: string): Promise<{ 
   try {
     const destDir = path.dirname(destPath)
     if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true })
-    const res = await client.drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' })
-    await new Promise<void>((resolve, reject) => {
-      const ws = fs.createWriteStream(destPath)
-      res.data.pipe(ws)
-      ws.on('finish', () => resolve())
-      ws.on('error', (err: any) => reject(err))
-    })
-    return { success: true }
+    const tmp = `${destPath}.download-${process.pid}-${Date.now()}`
+    try {
+      const res = await client.drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' })
+      await new Promise<void>((resolve, reject) => {
+        let settled = false
+        const finish = (err?: Error) => {
+          if (settled) return
+          settled = true
+          if (err) reject(err)
+          else resolve()
+        }
+        const ws = fs.createWriteStream(tmp)
+        res.data.on('error', finish)
+        res.data.on('aborted', () => finish(new Error('Drive download aborted')))
+        ws.on('error', finish)
+        ws.on('finish', () => finish())
+        res.data.pipe(ws)
+      })
+      if (!fs.statSync(tmp).size) throw new Error('Drive returned an empty file')
+      fs.renameSync(tmp, destPath)
+      return { success: true }
+    } finally {
+      try { fs.rmSync(tmp, { force: true }) } catch {}
+    }
   } catch (e: any) {
     return { success: false, message: e.message || String(e) }
   }
@@ -873,14 +889,12 @@ export async function downloadAndExtractSaveTo(fileId: string, targetFolder: str
       throw new Error('Dependência ausente: fs-extra. Instale com `npm i fs-extra`.')
     }
     
-    // Empty the target directory before copying to guarantee a clean restore.
-    if (fs.existsSync(targetFolder)) {
-      await fse.emptyDir(targetFolder)
-    } else {
-      fs.mkdirSync(targetFolder, { recursive: true })
+    // A legacy archive lacks reliable save metadata. Never erase live saves.
+    if (fs.existsSync(targetFolder) && fs.readdirSync(targetFolder).length > 0) {
+      throw new Error('Save local existe. Restauração automática antiga foi bloqueada.')
     }
-
-    await fse.copy(extractDir, targetFolder, { overwrite: true })
+    fs.mkdirSync(targetFolder, { recursive: true })
+    await fse.copy(extractDir, targetFolder, { overwrite: false, errorOnExist: true })
 
     // Limpeza
     try { fs.unlinkSync(tmpPath) } catch {}
@@ -960,31 +974,18 @@ export async function syncSavesOnPlayStart(options: {
     console.log(`[DRIVE-SYNC-LOGIC] Local Date: ${localDate?.toISOString() || 'NULL'}`)
     console.log(`[DRIVE-SYNC-LOGIC] Remote Date: ${remoteDate?.toISOString() || 'NULL'}`)
 
-    // A. No local or remote saves.
-    if (!localDate && !remoteDate) { 
-      console.log('[DRIVE-SYNC-LOGIC] Não há saves locais nem remotos. Nada a fazer.')
-      return { success: true, message: 'Nenhum save local ou remoto encontrado.' }
+    // Legacy backups do not contain authoritative save timestamps. Never
+    // infer that they are newer from Drive's UPLOAD date, and never delete
+    // existing local files. The versioned cloudSaves module handles conflicts.
+    if (localDate) {
+      return {
+        success: true, skipped: true,
+        message: 'Saves locais preservados; backup antigo do Drive requer revisão manual.'
+      }
     }
-    
-    // B. Upload: local save is newer or remote save does not exist.
-    if (localDate && (!remoteDate || localDate.getTime() > remoteDate.getTime())) {
-      console.log('[DRIVE-SYNC-LOGIC] Decisão: Local é mais novo. Fazendo Backup (Upload).')
-      return await backupLocalSavesToDrive({ ...options, realAppId: rid })
-    }
-
-    // C. Download: remote save is newer, or remote exists while local does not.
-    if (remoteDate && (!localDate || remoteDate.getTime() > localDate.getTime())) {
-      console.log('[DRIVE-SYNC-LOGIC] Decisão: Remote é mais novo/Local não existe. Fazendo Download.')
-      
-      // Log that the download function is about to be called.
-      console.log(`[DRIVE-SYNC-LOGIC] Chamando downloadAndExtractSaveTo(fileId: ${remote!.id}, destPath: ${savesPath})`)
-      
-      return await downloadAndExtractSaveTo(remote!.id, savesPath)
-    }
-
-    // D. Saves are already synchronized.
-    console.log('[DRIVE-SYNC-LOGIC] Decisão: Saves estão sincronizados (datas iguais).')
-    return { success: true, message: 'Saves estão sincronizados.' }
+    if (!remote) return { success: true, skipped: true, message: 'Nenhum backup legado encontrado.' }
+    console.log('[Drive] Only restoring legacy backup because no local saves were detected')
+    return await downloadAndExtractSaveTo(remote.id, savesPath)
 
   } catch (e: any) {
     console.error('[DRIVE-SYNC-LOGIC] Erro durante a sincronização:', e)
