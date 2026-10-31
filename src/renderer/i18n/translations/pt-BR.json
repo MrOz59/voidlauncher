@@ -1024,5 +1024,8 @@
   "library.saves.safety": "Feche o jogo antes de restaurar. Uma cópia local de segurança é obrigatória antes de sobrescrever saves. Excluir backups da nuvem não apaga os saves locais.",
   "library.saves.actionFailed": "Falha ao executar a ação de saves.",
   "library.saves.actionComplete": "Concluído.",
-  "library.saves.loadError": "Não foi possível carregar as informações dos saves."
+  "library.saves.loadError": "Não foi possível carregar as informações dos saves.",
+  "library.saves.addFolder": "Adicionar pasta de saves",
+  "library.saves.customFolders": "Pastas configuradas manualmente",
+  "library.saves.removeFolderHint": "Parar de monitorar esta pasta para o jogo. Nenhum arquivo será apagado."
 }
