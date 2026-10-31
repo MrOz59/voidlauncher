@@ -7,7 +7,7 @@
 
 import fs from 'fs'
 import path from 'path'
-import { getWinePrefixSavePaths } from './pcgamingwiki'
+import { getWinePrefixSavePaths, getWindowsNativeSavePaths } from './pcgamingwiki'
 
 export interface DetectedSaveLocation {
   path: string
@@ -652,6 +652,27 @@ export async function detectSaveLocationsAsync(options: SaveDetectorOptions): Pr
     results.push(...pcgwResults)
   }
   
+  if (process.platform === 'win32') {
+    try {
+      const nativePaths = await getWindowsNativeSavePaths({
+        steamAppId, title: gameTitle, gameInstallPath
+      })
+      for (const candidate of nativePaths) {
+        try {
+          if (!fs.statSync(candidate).isDirectory()) continue
+          results.push({
+            path: candidate, type: 'pcgamingwiki', confidence: 'high',
+            steamAppId, gameName: gameTitle, source: 'pcgamingwiki-windows'
+          })
+        } catch {
+          // Missing paths are normal before the first game launch.
+        }
+      }
+    } catch (err) {
+      console.warn('[SaveDetector] PCGamingWiki native Windows lookup failed:', err)
+    }
+  }
+
   // Then add heuristic results (already enriched with stats)
   const heuristicResults = detectSaveLocations(options)
   results.push(...heuristicResults)
