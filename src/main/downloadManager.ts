@@ -622,7 +622,8 @@ function mergeMoveEntry(srcPath: string, destPath: string) {
 function flattenSingleSubdir(basePath: string) {
   try {
     const entries = fs.readdirSync(basePath, { withFileTypes: true })
-      .filter(e => e.name !== '.DS_Store' && e.name !== 'Thumbs.db')
+      .filter(e => e.name !== '.DS_Store' && e.name !== 'Thumbs.db' &&
+        !/^\.of_/.test(e.name) && e.name !== '.extracting')
 
     if (entries.length !== 1 || !entries[0].isDirectory()) return
 
@@ -648,6 +649,7 @@ function flattenSingleSubdir(basePath: string) {
     console.log('[flattenSingleSubdir] Flattened nested folder:', subDir)
   } catch (err) {
     console.warn('[flattenSingleSubdir] Error while flattening', basePath, err)
+    throw err
   }
 }
 
@@ -1190,6 +1192,7 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
       updateDownloadStatus(Number(downloadId), 'extracting')
       const extractStart = Date.now()
 
+      fs.mkdirSync(installPath, { recursive: true })
       const markerPath = path.join(installPath, '.of_extracting.json')
       try {
         fs.writeFileSync(markerPath, JSON.stringify({ downloadId: Number(downloadId), gameUrl, archivePath: downloadFilePath, startedAt: Date.now() }, null, 2))
@@ -1222,19 +1225,7 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
         // Flatten/normalize extracted content (avoid nested installs)
         validateGameInstall(installPath, firstInstall)
 
-        // Remove the zip file after extraction
-        fs.unlinkSync(downloadFilePath)
-
-        // Try to remove the download folder if empty
-        try {
-          const files = fs.readdirSync(downloadDestPath)
-          if (files.length === 0) {
-            fs.rmdirSync(downloadDestPath)
-          }
-        } catch (e) {
-          // Ignore cleanup errors
-        }
-
+        // Keep the archive until the DB and completion marker are written.
         // Try to find the executable
         const executablePath = findExecutable(installPath)
 
@@ -1255,6 +1246,7 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
           url: gameUrl,
           title: gameTitle,
           status: 'installed',
+          downloadId: Number(downloadId),
           showInLibrary: true,
           installPath,
           version,
@@ -1266,6 +1258,16 @@ fs.mkdirSync(downloadDestPath, { recursive: true })
         updateDownloadStatus(Number(downloadId), 'completed')
         try { fs.unlinkSync(markerPath) } catch {}
         try { fs.writeFileSync(path.join(installPath, '.of_extracted'), String(Date.now())) } catch {}
+
+        // Archive cleanup must not reverse a verified installation's status.
+        try {
+          fs.unlinkSync(downloadFilePath)
+          if (fs.existsSync(downloadDestPath) && fs.readdirSync(downloadDestPath).length === 0) {
+            fs.rmdirSync(downloadDestPath)
+          }
+        } catch (cleanupError) {
+          console.warn('[DownloadManager] Archive cleanup failed after install:', cleanupError)
+        }
 
         // Emit final extraction progress to UI
         onProgress?.(100, { stage: 'extract', extractProgress: 100 })
