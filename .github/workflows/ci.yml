@@ -25,7 +25,9 @@ jobs:
             ~/.cache/electron-builder
           key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
       - run: npm ci
-      - run: npm run build
+      # TypeScript/renderer regression checks must not be blocked by the
+      # cx_Freeze/patchelf agent packaging step (tested by release workflows).
+      - run: npm run build:app
       - run: npm run typecheck
       - name: Install integrity regression tests
         run: node --test scripts/test-install-finalization.js
