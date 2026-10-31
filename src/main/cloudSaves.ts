@@ -242,6 +242,32 @@ async function getNewestRemoteForGameKey(gameKey: string): Promise<RemoteCloudSa
     (parseDriveModifiedTimeMs(b.modifiedTime) || 0) - (parseDriveModifiedTimeMs(a.modifiedTime) || 0))[0] || null
 }
 
+/**
+ * Some games store saves as extensionless files or proprietary .db/.profile
+ * files. When PCGamingWiki identifies the actual save directory, treat a
+ * non-empty directory as a local save even if the extension is unknown.
+ */
+function locationContainsSaves(loc: DetectedSaveLocation): boolean {
+  if ((loc.saveFileCount || 0) > 0) return true
+  if (loc.type !== 'pcgamingwiki' && loc.type !== 'onlinefix' &&
+      !/(?:^|[\\/])(savegames?|savedata|remote|profiles?)(?:[\\/]|$)/i.test(loc.path)) return false
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: loc.path, depth: 0 }]
+  while (stack.length) {
+    const item = stack.pop()!
+    if (item.depth > 4) continue
+    try {
+      for (const entry of fs.readdirSync(item.dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          stack.push({ dir: path.join(item.dir, entry.name), depth: item.depth + 1 })
+        } else if (entry.isFile() && !/^Thumbs\.db$|^desktop\.ini$|^\.DS_Store$/i.test(entry.name)) {
+          return true
+        }
+      }
+    } catch {}
+  }
+  return false
+}
+
 type LocalSaveSnapshot = {
   exists: boolean
   modifiedMs: number | null
@@ -259,7 +285,7 @@ async function inspectLocalSaves(
     gameTitle: opts.title || savedGame?.title || undefined,
     steamAppId: opts.steamAppId || savedGame?.steam_app_id || undefined
   })
-  const real = locations.filter(loc => (loc.saveFileCount || 0) > 0)
+  const real = locations.filter(locationContainsSaves)
   let modifiedMs: number | null = null
   for (const loc of real) {
     const at = loc.lastModified?.getTime()
@@ -299,7 +325,7 @@ async function createHeuristicBackup(
     if (l.confidence !== 'high' && l.confidence !== 'medium') return false
     if (!fs.existsSync(l.path)) return false
     // Skip empty folders or folders with no recent activity
-    if ((l.saveFileCount || 0) === 0 && !l.lastModified) return false
+    if (!locationContainsSaves(l)) return false
     return true
   })
 
@@ -510,9 +536,9 @@ export async function restoreCloudSavesBeforeLaunch(opts: CloudSaveSyncOptions):
       const rescue = await ludusaviBackupOne({ configDir, backupDir: rescueDir, gameName: name, winePrefix })
       rescued = rescue.ok && hasLudusaviMapping(rescueDir)
     }
-    if (!rescued && local.locations.some(loc => (loc.saveFileCount || 0) > 0)) {
+    if (!rescued && local.locations.some(locationContainsSaves)) {
       const heuristic = await createHeuristicBackup(
-        local.locations.filter(loc => (loc.saveFileCount || 0) > 0),
+        local.locations.filter(locationContainsSaves),
         rescueDir, opts.title, gameKey
       )
       rescued = heuristic.success && !!heuristic.zipPath && isValidBackupZip(heuristic.zipPath)
