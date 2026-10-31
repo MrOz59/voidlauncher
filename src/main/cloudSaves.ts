@@ -272,7 +272,9 @@ async function listGameRemoteBackups(gameKey: string): Promise<GameSaveBackup[]>
     remoteLegacyPrefixForGame(gameKey),
     remoteConflictPrefixForGame(gameKey),
     remoteHeuristicPrefixForGame(gameKey),
-    `heuristic_${gameKey}__conflict_`
+    `heuristic_${gameKey}__conflict_`,
+    ...(gameKey.startsWith('steam_') && /^steam_\d+$/.test(gameKey)
+      ? [`ofsave_${gameKey.slice(6)}_`] : [])
   ]
   const seen = new Set<string>()
   return results.filter(f => {
