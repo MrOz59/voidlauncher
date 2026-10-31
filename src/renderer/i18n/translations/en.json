@@ -1027,5 +1027,7 @@
   "library.saves.loadError": "Unable to load save information.",
   "library.saves.addFolder": "Add save folder",
   "library.saves.customFolders": "Manually configured folders",
-  "library.saves.removeFolderHint": "Stop monitoring this directory for this game. No files will be deleted."
+  "library.saves.removeFolderHint": "Stop monitoring this directory for this game. No files will be deleted.",
+  "library.saves.history": "Recent save activity",
+  "library.saves.noHistory": "No save activity recorded for this game yet."
 }
