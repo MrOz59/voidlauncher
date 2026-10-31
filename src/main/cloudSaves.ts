@@ -13,7 +13,8 @@ import {
   resolveLudusaviBinary,
   resolveLudusaviGameName
 } from './ludusavi'
-import { detectSaveLocations, detectSaveLocationsAsync, DetectedSaveLocation } from './saveDetector'
+import { detectSaveLocationsAsync, DetectedSaveLocation } from './saveDetector'
+import { getGame } from './db'
 
 function slugify(text: string) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
@@ -63,6 +64,7 @@ export type CloudSaveSyncOptions = {
   title?: string
   steamAppId?: string | null
   protonPrefix?: string | null
+  gameInstallPath?: string | null
 }
 
 export function computeCloudSavesGameKey(opts: CloudSaveSyncOptions): string {
@@ -99,6 +101,57 @@ function remoteLegacyPrefixForGame(gameKey: string): string {
 
 function remoteConflictPrefixForGame(gameKey: string): string {
   return `ludusavi_${gameKey}__conflict_`
+}
+
+function remoteHeuristicPrefixForGame(gameKey: string): string {
+  // Heuristic ZIPs have a different layout and cannot be restored by Ludusavi.
+  return `heuristic_${gameKey}__main_`
+}
+
+function safeRemoteZipFilename(fileName: string): string | null {
+  const name = String(fileName || '').trim()
+  if (!name || !name.toLowerCase().endsWith('.zip') || name.includes('/') || name.includes('\\') ||
+      name === '.' || name === '..') return null
+  return name
+}
+
+/** Reject missing/empty/non-ZIP uploads and incomplete Drive downloads. */
+function isValidBackupZip(filePath: string): boolean {
+  let handle: number | undefined
+  try {
+    const st = fs.statSync(filePath)
+    if (!st.isFile() || st.size < 22) return false
+    handle = fs.openSync(filePath, 'r')
+    const signature = Buffer.alloc(4)
+    if (fs.readSync(handle, signature, 0, 4, 0) !== 4 ||
+        !signature.subarray(0, 2).equals(Buffer.from('PK'))) return false
+    // Every normal ZIP includes an end-of-central-directory record in its tail.
+    const tailSize = Math.min(st.size, 65557)
+    const tail = Buffer.alloc(tailSize)
+    fs.readSync(handle, tail, 0, tailSize, st.size - tailSize)
+    return tail.includes(Buffer.from([0x50, 0x4b, 0x05, 0x06]))
+  } catch {
+    return false
+  } finally {
+    if (handle !== undefined) try { fs.closeSync(handle) } catch {}
+  }
+}
+
+async function pruneLegacyBackups(gameKey: string): Promise<void> {
+  // The old "ludusavi_<game>_" prefix also matches __main_ and __conflict_.
+  // Never let legacy retention accidentally delete newer primary backups.
+  const prefix = remoteLegacyPrefixForGame(gameKey)
+  const entries = await drive.listFilesByNamePrefix(prefix)
+  if (!Array.isArray(entries)) return
+  const legacy = entries.filter(entry =>
+    entry.name.startsWith(prefix) &&
+    !entry.name.startsWith(remotePrefixForGame(gameKey)) &&
+    !entry.name.startsWith(remoteConflictPrefixForGame(gameKey))
+  ).sort((a, b) => (parseDriveModifiedTimeMs(b.modifiedTime) || 0) - (parseDriveModifiedTimeMs(a.modifiedTime) || 0))
+  for (const entry of legacy.slice(DRIVE_KEEP_LEGACY_BACKUPS)) {
+    const result = await drive.deleteFile(entry.id)
+    if (!result.success) console.warn('[CloudSaves] Could not prune old backup:', entry.name, result.message)
+  }
 }
 
 const DRIVE_KEEP_MAIN_BACKUPS = 10
@@ -177,8 +230,15 @@ async function getLocalSaveStateMsViaPreview(opts: {
 async function getNewestRemoteForGameKey(gameKey: string): Promise<{ id: string; name: string; modifiedTime?: string } | null> {
   // Prefer new canonical prefix; fall back to legacy prefix.
   const canonical = await drive.getNewestRemoteFileByPrefix(remotePrefixForGame(gameKey))
-  if (canonical) return canonical
-  return await drive.getNewestRemoteFileByPrefix(remoteLegacyPrefixForGame(gameKey))
+  if (canonical?.name.startsWith(remotePrefixForGame(gameKey))) return canonical
+  // Earlier releases used a prefix that overlaps __main_ and __conflict_.
+  const legacy = await drive.listFilesByNamePrefix(remoteLegacyPrefixForGame(gameKey))
+  if (!Array.isArray(legacy)) return null
+  return legacy
+    .filter(f => f.name.startsWith(remoteLegacyPrefixForGame(gameKey)) &&
+      !f.name.startsWith(remoteConflictPrefixForGame(gameKey)) &&
+      !f.name.startsWith(remotePrefixForGame(gameKey)))
+    .sort((a, b) => (parseDriveModifiedTimeMs(b.modifiedTime) || 0) - (parseDriveModifiedTimeMs(a.modifiedTime) || 0))[0] || null
 }
 
 /**
@@ -240,16 +300,32 @@ async function createHeuristicBackup(
       const output = fs.createWriteStream(zipPath)
       const archive = archiver('zip', { zlib: { level: 9 } })
 
+      let settled = false
+      const fail = (err: Error) => {
+        if (settled) return
+        settled = true
+        console.error('[CloudSaves] Failed creating save archive:', err)
+        try { output.destroy() } catch {}
+        try { fs.rmSync(zipPath, { force: true }) } catch {}
+        resolve({ success: false, message: err.message })
+      }
+
       output.on('close', () => {
+        if (settled) return
+        settled = true
+        if (!isValidBackupZip(zipPath)) {
+          try { fs.rmSync(zipPath, { force: true }) } catch {}
+          resolve({ success: false, message: 'Backup ZIP incompleto ou inválido.' })
+          return
+        }
         const size = archive.pointer()
         console.log('[CloudSaves] Heuristic backup created:', zipPath, `(${(size / 1024).toFixed(1)} KB)`)
         resolve({ success: true, zipPath })
       })
 
-      archive.on('error', (err) => {
-        console.error('[CloudSaves] Archive error:', err)
-        resolve({ success: false, message: err.message })
-      })
+      output.on('error', fail)
+      archive.on('error', fail)
+      archive.on('warning', fail)
 
       archive.pipe(output)
 
@@ -303,9 +379,26 @@ export async function restoreCloudSavesBeforeLaunch(opts: CloudSaveSyncOptions):
     return { success: true, skipped: true, message: 'Saves locais parecem mais novos; ignorando restore remoto.' }
   }
 
-  const localZip = path.join(backupDir, remote.name)
+  const remoteName = safeRemoteZipFilename(remote.name)
+  if (!remoteName) return { success: false, message: 'Nome inválido de backup remoto.' }
+
+  // Save a local recovery point before overwriting an existing save.
+  if (localStateMs != null) {
+    const rescueDir = path.join(app.getPath('userData'), 'ludusavi-recovery', gameKey, String(Date.now()))
+    ensureDir(rescueDir)
+    const rescue = await ludusaviBackupOne({ configDir, backupDir: rescueDir, gameName: resolvedName, winePrefix })
+    if (!rescue.ok || !newestZipInDir(rescueDir)) {
+      return { success: false, message: 'Restore remoto bloqueado: não foi possível criar backup local de segurança.' }
+    }
+  }
+
+  const localZip = path.join(backupDir, remoteName)
   const dl = await drive.downloadSave(remote.id, localZip)
   if (!dl.success) return { success: false, message: dl.message || 'Falha ao baixar backup do Drive.' }
+  if (!isValidBackupZip(localZip)) {
+    try { fs.rmSync(localZip, { force: true }) } catch {}
+    return { success: false, message: 'O arquivo baixado do Drive não é um ZIP completo.' }
+  }
 
   const res = await ludusaviRestoreOne({ configDir, backupDir, gameName: resolvedName })
   if (!res.ok) {
@@ -337,12 +430,14 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
 
   let zipPath: string | null = null
   let usedHeuristic = false
+  let remoteIsNewer = false
 
   if (bin && resolvedName) {
     // Compare live local state vs remote before uploading, to avoid overwriting newer cloud saves.
     const localStateMs = await getLocalSaveStateMsViaPreview({ configDir, backupDir, gameName: resolvedName, winePrefix })
     const remote = await getNewestRemoteForGameKey(gameKey)
     const remoteMs = parseDriveModifiedTimeMs(remote?.modifiedTime)
+    remoteIsNewer = localStateMs != null && remoteMs != null && remoteMs > localStateMs + 30_000
 
     const backupRes = await ludusaviBackupOne({ configDir, backupDir, gameName: resolvedName, winePrefix })
     if (backupRes.ok) {
@@ -356,13 +451,15 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
     console.log('[CloudSaves] Ludusavi unavailable or game not found, trying heuristic detection...')
   }
 
-  // Fallback to heuristic detection if Ludusavi failed
-  if (!zipPath && winePrefix) {
+  // Fallback to heuristic detection. Native Windows games have no wine prefix.
+  const knownInstall = String(opts.gameInstallPath || (opts.gameUrl ? (getGame(opts.gameUrl) as any)?.install_path : '') || '').trim()
+  if (!zipPath && (winePrefix || process.platform === 'win32' || knownInstall)) {
     console.log('[CloudSaves] Using heuristic save detection (includes PCGamingWiki lookup)...')
     
     // Use async version that includes PCGamingWiki lookup
     const detected = await detectSaveLocationsAsync({
       winePrefix,
+      gameInstallPath: knownInstall || undefined,
       gameTitle: opts.title || undefined,
       steamAppId: opts.steamAppId || undefined
     })
@@ -383,10 +480,15 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
     return { success: false, message: 'Nenhum save encontrado (Ludusavi e heurística falharam).' }
   }
 
-  const ts = new Date().toISOString().replace(/[:.]/g, '-')
+  if (!isValidBackupZip(zipPath)) {
+    return { success: false, message: 'Backup local inválido; upload cancelado para proteger os saves remotos.' }
+  }
 
-  // For heuristic backups, always upload as main (no conflict detection without Ludusavi timestamps)
-  const prefix = usedHeuristic ? remotePrefixForGame(gameKey) : remotePrefixForGame(gameKey)
+  const ts = new Date().toISOString().replace(/[:.]/g, '-')
+  // Never automatically restore heuristic archives through Ludusavi, and do
+  // not overwrite a newer remote main snapshot with older local save data.
+  const prefix = usedHeuristic ? remoteHeuristicPrefixForGame(gameKey)
+    : remoteIsNewer ? remoteConflictPrefixForGame(gameKey) : remotePrefixForGame(gameKey)
   const remoteName = `${prefix}${ts}.zip`
   const up = await drive.uploadSave(zipPath, remoteName)
   if (!up.success) return { success: false, message: up.message || 'Falha ao enviar backup ao Drive.' }
@@ -395,13 +497,19 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
   try {
     await drive.pruneFilesByNamePrefix(remotePrefixForGame(gameKey), DRIVE_KEEP_MAIN_BACKUPS)
     await drive.pruneFilesByNamePrefix(remoteConflictPrefixForGame(gameKey), DRIVE_KEEP_CONFLICT_BACKUPS)
-    await drive.pruneFilesByNamePrefix(remoteLegacyPrefixForGame(gameKey), DRIVE_KEEP_LEGACY_BACKUPS)
+    await drive.pruneFilesByNamePrefix(remoteHeuristicPrefixForGame(gameKey), DRIVE_KEEP_MAIN_BACKUPS)
+    await pruneLegacyBackups(gameKey)
   } catch {
     // ignore pruning failures
   }
 
   const methodUsed = usedHeuristic ? 'heurística' : 'Ludusavi'
-  return { success: true, fileId: up.id, message: `Backup realizado via ${methodUsed}.` }
+  return {
+    success: true, fileId: up.id,
+    message: remoteIsNewer && !usedHeuristic
+      ? `Saves remotos mais novos; backup local via ${methodUsed} preservado separadamente como conflito.`
+      : `Backup realizado via ${methodUsed}.`
+  }
 }
 
 export async function syncCloudSavesManual(opts: CloudSaveSyncOptions): Promise<{ success: boolean; message?: string }> {
