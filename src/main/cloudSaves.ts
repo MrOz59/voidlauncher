@@ -2,7 +2,7 @@ import { app, dialog } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { execSync } from 'child_process'
-import archiver from 'archiver'
+import { writeHeuristicSaveArchive, saveArchiveFolderName, restoreSaveDirectoryContents } from './heuristicSaveArchive'
 
 import * as drive from './drive'
 import {
@@ -518,79 +518,19 @@ async function createHeuristicBackup(
   }
 
   try {
-    // Create manifest with metadata
-    const manifest = {
-      created: new Date().toISOString(),
+    await writeHeuristicSaveArchive({
+      locations: validLocations,
+      zipPath,
+      gameKey: gameKey || computeCloudSavesGameKey({ title: gameTitle }),
       gameTitle,
-      platform: process.platform,
-      locations: validLocations.map(l => ({
-        path: l.path,
-        type: l.type,
-        confidence: l.confidence,
-        steamAppId: l.steamAppId,
-        gameName: l.gameName,
-        saveFileCount: l.saveFileCount,
-        totalSize: l.totalSize,
-        lastModified: l.lastModified?.toISOString()
-      }))
-    }
-
-    // Create zip using archiver (no external zip command needed)
-    return new Promise((resolve) => {
-      const output = fs.createWriteStream(zipPath)
-      const archive = archiver('zip', { zlib: { level: 9 } })
-
-      let settled = false
-      const fail = (err: Error) => {
-        if (settled) return
-        settled = true
-        console.error('[CloudSaves] Failed creating save archive:', err)
-        try { output.destroy() } catch {}
-        try { fs.rmSync(zipPath, { force: true }) } catch {}
-        resolve({ success: false, message: err.message })
-      }
-
-      output.on('close', () => {
-        if (settled) return
-        settled = true
-        if (!isValidBackupZip(zipPath)) {
-          try { fs.rmSync(zipPath, { force: true }) } catch {}
-          resolve({ success: false, message: 'Backup ZIP incompleto ou inválido.' })
-          return
-        }
-        const size = archive.pointer()
-        console.log('[CloudSaves] Heuristic backup created:', zipPath, `(${(size / 1024).toFixed(1)} KB)`)
-        resolve({ success: true, zipPath })
-      })
-
-      output.on('error', fail)
-      archive.on('error', fail)
-      archive.on('warning', fail)
-
-      archive.pipe(output)
-
-      // Add manifest
-      archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' })
-      archive.append(JSON.stringify({
-        version: 2, format: 'heuristic-bundle',
-        platform: process.platform, gameTitle,
-        gameKey: gameKey || computeCloudSavesGameKey({ title: gameTitle })
-      }, null, 2), { name: '.void-save-bundle.json' })
-
-      // Add each save location as a directory
-      for (let i = 0; i < validLocations.length; i++) {
-        const loc = validLocations[i]
-        const folderName = `${i}_${loc.type}_${loc.steamAppId || loc.gameName || 'saves'}`.replace(/[^a-zA-Z0-9_-]/g, '_')
-        
-        // Add directory contents to archive
-        archive.directory(loc.path, folderName)
-      }
-
-      archive.finalize()
+      platform: process.platform
     })
-  } catch (err: any) {
-    console.error('[CloudSaves] Failed to create heuristic backup:', err)
-    return { success: false, message: err?.message || String(err) }
+    console.log('[CloudSaves] Heuristic backup created, preserving nested save folders:', zipPath)
+    return { success: true, zipPath }
+  } catch (error: any) {
+    const message = error?.message || String(error)
+    console.error('[CloudSaves] Heuristic archive creation failed:', message)
+    return { success: false, message }
   }
 }
 
@@ -629,7 +569,9 @@ function restoreHeuristicSnapshot(
   for (let i = 0; i < info.locations.length; i++) {
     const item = info.locations[i]
     const to = path.resolve(String(item?.path || ''))
-    const folderName = `${i}_${item.type}_${item.steamAppId || item.gameName || 'saves'}`.replace(/[^a-zA-Z0-9_-]/g, '_')
+    const expectedFolder = saveArchiveFolderName(item, i)
+    const folderName = item.archiveFolder === undefined ? expectedFolder : String(item.archiveFolder)
+    if (folderName !== expectedFolder) throw new Error('Manifest de saves contém pasta inválida.')
     const from = path.join(staging, folderName)
     if (!path.isAbsolute(String(item.path || '')) ||
         !approvedRoots.some(root => underRoot(to, root)) ||
@@ -647,8 +589,9 @@ function restoreHeuristicSnapshot(
     planned.push({ from, to })
   }
   for (const { from, to } of planned) {
-    fs.mkdirSync(to, { recursive: true })
-    fs.cpSync(from, to, { recursive: true, force: true })
+    // Copy all children into the original save root. For Stellaris this
+    // recreates save games/<empire>/<date>.sav with no extra wrapper folder.
+    restoreSaveDirectoryContents(from, to)
   }
 }
 
