@@ -571,7 +571,7 @@ function detectWindowsSaveLocations(options: SaveDetectorOptions): DetectedSaveL
       // Paradox's launch-independent saves live in Documents/Paradox
       // Interactive/<Game>/save games/<empire or profile>/<date>.sav.
       // Preserve that root, never substitute the game installation directory.
-      if (/^(stellaris|crusader kings|europa universalis|hearts of iron|victoria)\\b/i.test(title)) {
+      if (/^(stellaris|crusader kings|europa universalis|hearts of iron|victoria)\b/i.test(title)) {
         candidates.push({ path: path.join(docRoot, 'Paradox Interactive', name, 'save games'), type: 'documents' })
       }
     }
