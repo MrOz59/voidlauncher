@@ -308,6 +308,28 @@ async function ensureAppFolder(drive: any) {
   return created.data.id
 }
 
+/**
+ * Newly created backups live under VoidLauncher/<game key>/ in Drive.
+ * Legacy backups remain in the original app folder and are still readable.
+ */
+async function ensureGameSavesFolder(driveClient: any, gameKey: string): Promise<string> {
+  const parentId = await ensureAppFolder(driveClient)
+  const safeKey = String(gameKey).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120)
+  if (!safeKey) return parentId
+  const folderName = `game_${safeKey}`
+  const found = await driveClient.files.list({
+    q: `'${escapeDriveQueryValue(parentId)}' in parents and mimeType='application/vnd.google-apps.folder' and name='${escapeDriveQueryValue(folderName)}' and trashed=false`,
+    fields: 'files(id,name)',
+    pageSize: 100
+  })
+  if (found.data.files?.[0]?.id) return found.data.files[0].id
+  const created = await driveClient.files.create({
+    requestBody: { name: folderName, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
+    fields: 'id'
+  })
+  return created.data.id || parentId
+}
+
 export async function listSaves(realAppId?: string): Promise<{ id: string; name: string; modifiedTime?: string }[] | { error: string }> {
   const client = loadOAuthClient()
   if (!client) return { error: 'Missing credentials or token. Authenticate first.' }
@@ -353,8 +375,8 @@ export async function listFilesByAppProperties(props: Record<string, string>): P
   const client = loadOAuthClient()
   if (!client) return { error: 'Missing credentials or token. Authenticate first.' }
   try {
-    const folderId = await ensureAppFolder(client.drive)
-    const qParts = [`'${escapeDriveQueryValue(folderId)}' in parents`, 'trashed=false']
+    // Metadata is indexed across all game subfolders, not just the legacy root.
+    const qParts = ['trashed=false']
     const entries = Object.entries(props || {}).filter(([, v]) => String(v || '').trim() !== '')
     for (const [k, v] of entries) {
       const key = escapeDriveQueryValue(k)
@@ -362,11 +384,17 @@ export async function listFilesByAppProperties(props: Record<string, string>): P
       qParts.push(`appProperties has { key='${key}' and value='${val}' }`)
     }
     const q = qParts.join(' and ')
-    const res = await client.drive.files.list({
-      q,
-      fields: 'files(id, name, modifiedTime, appProperties)'
-    })
-    return (res.data.files || []).map((f: any) => ({ id: f.id, name: f.name, modifiedTime: f.modifiedTime, appProperties: f.appProperties }))
+    const files: any[] = []
+    let pageToken: string | undefined
+    do {
+      const res = await client.drive.files.list({
+        q, fields: 'nextPageToken,files(id,name,modifiedTime,appProperties)',
+        pageSize: 1000, ...(pageToken ? { pageToken } : {})
+      })
+      files.push(...(res.data.files || []))
+      pageToken = res.data.nextPageToken || undefined
+    } while (pageToken)
+    return files.map((f: any) => ({ id: f.id, name: f.name, modifiedTime: f.modifiedTime, appProperties: f.appProperties }))
   } catch (e: any) {
     return { error: e?.message || String(e) }
   }
@@ -434,7 +462,9 @@ export async function uploadSave(
   const client = loadOAuthClient()
   if (!client) return { success: false, message: 'Missing credentials or token. Authenticate first.' }
   try {
-    const folderId = await ensureAppFolder(client.drive)
+    const folderId = metadata?.appProperties?.voidGameKey
+      ? await ensureGameSavesFolder(client.drive, metadata.appProperties.voidGameKey)
+      : await ensureAppFolder(client.drive)
     const stream = fs.createReadStream(localPath)
     const res = await client.drive.files.create({
       requestBody: {
