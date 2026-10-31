@@ -26,3 +26,25 @@ jobs:
           key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
       - run: npm ci
       - run: npm run build
+      - run: npm run typecheck
+      - name: Install integrity regression tests
+        run: node --test scripts/test-install-finalization.js
+      - name: Save backup integrity regression tests
+        run: node --test scripts/test-backup-integrity.js
+
+  windows-smoke:
+    name: Windows app + toast compile
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: npm run build:app
+      - run: npm run typecheck
+      - run: node --test scripts/test-install-finalization.js scripts/test-backup-integrity.js
+      - name: Compile native Windows toast (verifies border fix)
+        run: npm run build:notification-overlay:windows
