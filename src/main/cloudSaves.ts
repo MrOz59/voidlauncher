@@ -456,9 +456,13 @@ async function inspectLocalSaves(
     try { return fs.statSync(folder).isDirectory() ? scanCustomLocation(folder) : null }
     catch { return null }
   }).filter((loc): loc is DetectedSaveLocation => loc !== null)
-  const known = new Set(locations.map(loc => path.resolve(loc.path).toLowerCase()))
-  for (const loc of manual) if (!known.has(path.resolve(loc.path).toLowerCase())) locations.push(loc)
-  const real = locations.filter(loc => (loc.source === 'manual' && (loc.saveFileCount || 0) > 0) || locationContainsSaves(loc))
+  const known = new Map(locations.map((loc, index) => [path.resolve(loc.path).toLowerCase(), index]))
+  for (const loc of manual) {
+    const index = known.get(path.resolve(loc.path).toLowerCase())
+    if (index == null) locations.push(loc)
+    else locations[index] = loc // User-selected paths override lower-confidence guesses.
+  }
+  const real = locations.filter(locationContainsSaves)
   let modifiedMs: number | null = null
   for (const loc of real) {
     const at = loc.lastModified?.getTime()
@@ -469,7 +473,9 @@ async function inspectLocalSaves(
     const preview = await getLocalSaveStateMsViaPreview({ configDir, backupDir, gameName, winePrefix })
     if (preview != null) return { exists: true, modifiedMs: preview, locations }
   }
-  return { exists: real.length > 0, modifiedMs, locations }
+  // Empty candidates are not valid save locations. Keep this list aligned
+  // between the library UI, conflict checks and the backup path.
+  return { exists: real.length > 0, modifiedMs, locations: real }
 }
 
 
@@ -827,32 +833,29 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
     }
   }
 
-  // Fallback to heuristic detection. Native Windows games have no wine prefix.
-  if (!zipPath && (winePrefix || process.platform === 'win32' || knownInstall)) {
-    console.log('[CloudSaves] Using heuristic save detection (includes PCGamingWiki lookup)...')
-    
-    // Use async version that includes PCGamingWiki lookup
-    const detected = await detectSaveLocationsAsync({
-      winePrefix,
-      gameInstallPath: knownInstall || undefined,
-      gameTitle: opts.title || undefined,
-      steamAppId: opts.steamAppId || undefined
-    })
-
-    if (detected.length > 0) {
-      console.log('[CloudSaves] Detected', detected.length, 'save locations via heuristics/PCGamingWiki')
+  // Use exactly the same set of locations shown in the per-game Saves tab.
+  // Redetecting here discarded user-selected folders and left only empty
+  // game-install folders (e.g. Stellaris common/zone_slots).
+  let heuristicError: string | null = null
+  if (!zipPath) {
+    const detected = local.locations.filter(locationContainsSaves)
+    console.log('[CloudSaves] Backup sources:', detected.map(loc =>
+      `${loc.source || loc.type}: ${loc.path} (${loc.saveFileCount || 0} files)`))
+    if (detected.length) {
       const heuristicResult = await createHeuristicBackup(detected, backupDir, opts.title || undefined, gameKey)
       if (heuristicResult.success && heuristicResult.zipPath) {
         zipPath = heuristicResult.zipPath
         usedHeuristic = true
+      } else {
+        heuristicError = heuristicResult.message || 'Falha ao empacotar os arquivos de saves.'
       }
     } else {
-      console.log('[CloudSaves] No save locations detected via heuristics/PCGamingWiki')
+      heuristicError = 'Nenhum arquivo de save encontrado nas pastas detectadas ou configuradas manualmente.'
     }
   }
 
   if (!zipPath) {
-    return { success: false, message: 'Nenhum save encontrado (Ludusavi e heurística falharam).' }
+    return { success: false, message: heuristicError || 'Ludusavi e backup alternativo não produziram um arquivo válido.' }
   }
 
   if (!isValidBackupZip(zipPath)) {
