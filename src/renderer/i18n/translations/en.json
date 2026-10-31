@@ -1029,5 +1029,6 @@
   "library.saves.customFolders": "Manually configured folders",
   "library.saves.removeFolderHint": "Stop monitoring this directory for this game. No files will be deleted.",
   "library.saves.history": "Recent save activity",
-  "library.saves.noHistory": "No save activity recorded for this game yet."
+  "library.saves.noHistory": "No save activity recorded for this game yet.",
+  "library.saves.manualSource": "Manually added save folder"
 }

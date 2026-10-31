@@ -2,7 +2,7 @@ import { app, dialog } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { execSync } from 'child_process'
-import archiver from 'archiver'
+import { writeHeuristicSaveArchive, saveArchiveFolderName, restoreSaveDirectoryContents } from './heuristicSaveArchive'
 
 import * as drive from './drive'
 import {
@@ -456,9 +456,13 @@ async function inspectLocalSaves(
     try { return fs.statSync(folder).isDirectory() ? scanCustomLocation(folder) : null }
     catch { return null }
   }).filter((loc): loc is DetectedSaveLocation => loc !== null)
-  const known = new Set(locations.map(loc => path.resolve(loc.path).toLowerCase()))
-  for (const loc of manual) if (!known.has(path.resolve(loc.path).toLowerCase())) locations.push(loc)
-  const real = locations.filter(loc => (loc.source === 'manual' && (loc.saveFileCount || 0) > 0) || locationContainsSaves(loc))
+  const known = new Map(locations.map((loc, index) => [path.resolve(loc.path).toLowerCase(), index]))
+  for (const loc of manual) {
+    const index = known.get(path.resolve(loc.path).toLowerCase())
+    if (index == null) locations.push(loc)
+    else locations[index] = loc // User-selected paths override lower-confidence guesses.
+  }
+  const real = locations.filter(locationContainsSaves)
   let modifiedMs: number | null = null
   for (const loc of real) {
     const at = loc.lastModified?.getTime()
@@ -469,7 +473,9 @@ async function inspectLocalSaves(
     const preview = await getLocalSaveStateMsViaPreview({ configDir, backupDir, gameName, winePrefix })
     if (preview != null) return { exists: true, modifiedMs: preview, locations }
   }
-  return { exists: real.length > 0, modifiedMs, locations }
+  // Empty candidates are not valid save locations. Keep this list aligned
+  // between the library UI, conflict checks and the backup path.
+  return { exists: real.length > 0, modifiedMs, locations: real }
 }
 
 
@@ -512,79 +518,19 @@ async function createHeuristicBackup(
   }
 
   try {
-    // Create manifest with metadata
-    const manifest = {
-      created: new Date().toISOString(),
+    await writeHeuristicSaveArchive({
+      locations: validLocations,
+      zipPath,
+      gameKey: gameKey || computeCloudSavesGameKey({ title: gameTitle }),
       gameTitle,
-      platform: process.platform,
-      locations: validLocations.map(l => ({
-        path: l.path,
-        type: l.type,
-        confidence: l.confidence,
-        steamAppId: l.steamAppId,
-        gameName: l.gameName,
-        saveFileCount: l.saveFileCount,
-        totalSize: l.totalSize,
-        lastModified: l.lastModified?.toISOString()
-      }))
-    }
-
-    // Create zip using archiver (no external zip command needed)
-    return new Promise((resolve) => {
-      const output = fs.createWriteStream(zipPath)
-      const archive = archiver('zip', { zlib: { level: 9 } })
-
-      let settled = false
-      const fail = (err: Error) => {
-        if (settled) return
-        settled = true
-        console.error('[CloudSaves] Failed creating save archive:', err)
-        try { output.destroy() } catch {}
-        try { fs.rmSync(zipPath, { force: true }) } catch {}
-        resolve({ success: false, message: err.message })
-      }
-
-      output.on('close', () => {
-        if (settled) return
-        settled = true
-        if (!isValidBackupZip(zipPath)) {
-          try { fs.rmSync(zipPath, { force: true }) } catch {}
-          resolve({ success: false, message: 'Backup ZIP incompleto ou inválido.' })
-          return
-        }
-        const size = archive.pointer()
-        console.log('[CloudSaves] Heuristic backup created:', zipPath, `(${(size / 1024).toFixed(1)} KB)`)
-        resolve({ success: true, zipPath })
-      })
-
-      output.on('error', fail)
-      archive.on('error', fail)
-      archive.on('warning', fail)
-
-      archive.pipe(output)
-
-      // Add manifest
-      archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' })
-      archive.append(JSON.stringify({
-        version: 2, format: 'heuristic-bundle',
-        platform: process.platform, gameTitle,
-        gameKey: gameKey || computeCloudSavesGameKey({ title: gameTitle })
-      }, null, 2), { name: '.void-save-bundle.json' })
-
-      // Add each save location as a directory
-      for (let i = 0; i < validLocations.length; i++) {
-        const loc = validLocations[i]
-        const folderName = `${i}_${loc.type}_${loc.steamAppId || loc.gameName || 'saves'}`.replace(/[^a-zA-Z0-9_-]/g, '_')
-        
-        // Add directory contents to archive
-        archive.directory(loc.path, folderName)
-      }
-
-      archive.finalize()
+      platform: process.platform
     })
-  } catch (err: any) {
-    console.error('[CloudSaves] Failed to create heuristic backup:', err)
-    return { success: false, message: err?.message || String(err) }
+    console.log('[CloudSaves] Heuristic backup created, preserving nested save folders:', zipPath)
+    return { success: true, zipPath }
+  } catch (error: any) {
+    const message = error?.message || String(error)
+    console.error('[CloudSaves] Heuristic archive creation failed:', message)
+    return { success: false, message }
   }
 }
 
@@ -623,7 +569,9 @@ function restoreHeuristicSnapshot(
   for (let i = 0; i < info.locations.length; i++) {
     const item = info.locations[i]
     const to = path.resolve(String(item?.path || ''))
-    const folderName = `${i}_${item.type}_${item.steamAppId || item.gameName || 'saves'}`.replace(/[^a-zA-Z0-9_-]/g, '_')
+    const expectedFolder = saveArchiveFolderName(item, i)
+    const folderName = item.archiveFolder === undefined ? expectedFolder : String(item.archiveFolder)
+    if (folderName !== expectedFolder) throw new Error('Manifest de saves contém pasta inválida.')
     const from = path.join(staging, folderName)
     if (!path.isAbsolute(String(item.path || '')) ||
         !approvedRoots.some(root => underRoot(to, root)) ||
@@ -641,8 +589,9 @@ function restoreHeuristicSnapshot(
     planned.push({ from, to })
   }
   for (const { from, to } of planned) {
-    fs.mkdirSync(to, { recursive: true })
-    fs.cpSync(from, to, { recursive: true, force: true })
+    // Copy all children into the original save root. For Stellaris this
+    // recreates save games/<empire>/<date>.sav with no extra wrapper folder.
+    restoreSaveDirectoryContents(from, to)
   }
 }
 
@@ -827,32 +776,29 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
     }
   }
 
-  // Fallback to heuristic detection. Native Windows games have no wine prefix.
-  if (!zipPath && (winePrefix || process.platform === 'win32' || knownInstall)) {
-    console.log('[CloudSaves] Using heuristic save detection (includes PCGamingWiki lookup)...')
-    
-    // Use async version that includes PCGamingWiki lookup
-    const detected = await detectSaveLocationsAsync({
-      winePrefix,
-      gameInstallPath: knownInstall || undefined,
-      gameTitle: opts.title || undefined,
-      steamAppId: opts.steamAppId || undefined
-    })
-
-    if (detected.length > 0) {
-      console.log('[CloudSaves] Detected', detected.length, 'save locations via heuristics/PCGamingWiki')
+  // Use exactly the same set of locations shown in the per-game Saves tab.
+  // Redetecting here discarded user-selected folders and left only empty
+  // game-install folders (e.g. Stellaris common/zone_slots).
+  let heuristicError: string | null = null
+  if (!zipPath) {
+    const detected = local.locations.filter(locationContainsSaves)
+    console.log('[CloudSaves] Backup sources:', detected.map(loc =>
+      `${loc.source || loc.type}: ${loc.path} (${loc.saveFileCount || 0} files)`))
+    if (detected.length) {
       const heuristicResult = await createHeuristicBackup(detected, backupDir, opts.title || undefined, gameKey)
       if (heuristicResult.success && heuristicResult.zipPath) {
         zipPath = heuristicResult.zipPath
         usedHeuristic = true
+      } else {
+        heuristicError = heuristicResult.message || 'Falha ao empacotar os arquivos de saves.'
       }
     } else {
-      console.log('[CloudSaves] No save locations detected via heuristics/PCGamingWiki')
+      heuristicError = 'Nenhum arquivo de save encontrado nas pastas detectadas ou configuradas manualmente.'
     }
   }
 
   if (!zipPath) {
-    return { success: false, message: 'Nenhum save encontrado (Ludusavi e heurística falharam).' }
+    return { success: false, message: heuristicError || 'Ludusavi e backup alternativo não produziram um arquivo válido.' }
   }
 
   if (!isValidBackupZip(zipPath)) {

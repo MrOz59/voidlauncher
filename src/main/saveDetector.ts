@@ -7,6 +7,7 @@
 
 import fs from 'fs'
 import path from 'path'
+import { app } from 'electron'
 import { getWinePrefixSavePaths, getWindowsNativeSavePaths } from './pcgamingwiki'
 
 export interface DetectedSaveLocation {
@@ -110,7 +111,7 @@ interface FolderStats {
 /**
  * Get statistics about save files in a directory (recursively)
  */
-function getFolderStats(dirPath: string, maxDepth = 3): FolderStats {
+function getFolderStats(dirPath: string, maxDepth = 6): FolderStats {
   const stats: FolderStats = {
     saveFileCount: 0,
     totalSize: 0,
@@ -452,12 +453,16 @@ function detectGameFolderSaves(gameInstallPath?: string): DetectedSaveLocation[]
         const entryPath = path.join(dir, entry.name)
         
         if (looksLikeSaveFolder(entry.name)) {
-          const saveCount = countSaveFiles(entryPath)
-          results.push({
-            path: entryPath,
-            type: 'game_folder',
-            confidence: saveCount > 0 ? 'high' : 'medium'
-          })
+          // A folder named zone_slots/savegames is just a *candidate*.
+          // Never report it as a save unless it actually contains save data.
+          const stats = getFolderStats(entryPath, 6)
+          if (stats.saveFileCount > 0) {
+            results.push({
+              path: entryPath,
+              type: 'game_folder',
+              confidence: 'medium'
+            })
+          }
         } else {
           scanDir(entryPath, depth + 1)
         }
@@ -531,11 +536,19 @@ function detectWindowsSaveLocations(options: SaveDetectorOptions): DetectedSaveL
   const documents = home ? path.join(home, 'Documents') : ''
   const savedGames = home ? path.join(home, 'Saved Games') : ''
   const localLow = home ? path.join(home, 'AppData', 'LocalLow') : ''
+  // Windows Known Folders handles redirection and localized folders
+  // (e.g. C:\\Users\\...\\OneDrive\\Documentos instead of Documents).
+  let systemDocuments = ''
+  try {
+    if (app?.isReady()) systemDocuments = app.getPath('documents')
+  } catch {}
+  const oneDrives = [process.env.OneDrive, process.env.OneDriveConsumer,
+    process.env.OneDriveCommercial].filter((root): root is string => !!root)
   const documentsRoots = Array.from(new Set([
+    systemDocuments,
     documents,
-    process.env.OneDrive ? path.join(process.env.OneDrive, 'Documents') : '',
-    process.env.OneDriveConsumer ? path.join(process.env.OneDriveConsumer, 'Documents') : '',
-    process.env.OneDriveCommercial ? path.join(process.env.OneDriveCommercial, 'Documents') : ''
+    home ? path.join(home, 'Documentos') : '',
+    ...oneDrives.flatMap(root => [path.join(root, 'Documents'), path.join(root, 'Documentos')])
   ].filter(Boolean)))
   const candidates: Array<{ path: string; type: DetectedSaveLocation['type'] }> = []
 
@@ -555,6 +568,12 @@ function detectWindowsSaveLocations(options: SaveDetectorOptions): DetectedSaveL
     for (const docRoot of documentsRoots) {
       candidates.push({ path: path.join(docRoot, 'My Games', name), type: 'documents' })
       candidates.push({ path: path.join(docRoot, name), type: 'documents' })
+      // Paradox's launch-independent saves live in Documents/Paradox
+      // Interactive/<Game>/save games/<empire or profile>/<date>.sav.
+      // Preserve that root, never substitute the game installation directory.
+      if (/^(stellaris|crusader kings|europa universalis|hearts of iron|victoria)\b/i.test(title)) {
+        candidates.push({ path: path.join(docRoot, 'Paradox Interactive', name, 'save games'), type: 'documents' })
+      }
     }
     if (savedGames) candidates.push({ path: path.join(savedGames, name), type: 'saved_games' })
   }
