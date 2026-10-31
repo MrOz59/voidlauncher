@@ -1,6 +1,7 @@
 import { downloadFile, downloadTorrent, pauseTorrent, resumeTorrent, cancelTorrent, type TorrentProgress, isTorrentActive, getActiveTorrentIds, getActiveTorrentSnapshots } from './downloader'
 import { extractZipWithPassword } from './zip'
 import { processUpdateExtraction, findFilesRecursive } from './extractionUtils'
+import { isValidFinalizedInstall } from './installFinalization'
 import { findAndReadOnlineFixIni } from './utils/onlinefixIni'
 import { sanitizeVersionText } from './utils/versionUtils'
 import {
@@ -159,20 +160,15 @@ function fileExists(p?: string | null): boolean {
  */
 export function isDownloadInstallFinalized(download: { id?: number; game_url?: string | null }, installDir?: string | null): boolean {
   const dir = resolvedPathMaybe(installDir)
-  const id = Number(download?.id)
-  if (!dir || !Number.isSafeInteger(id) || id <= 0) return false
-  try {
-    if (!fs.statSync(dir).isDirectory() || hasExtractionMarker(dir)) return false
-    const marker = JSON.parse(fs.readFileSync(path.join(dir, '.of_game.json'), 'utf8'))
-    if (marker?.status !== 'installed' || Number(marker?.downloadId) !== id) return false
-    if (download?.game_url && marker?.url !== download.game_url) return false
-    if (marker?.installPath && path.resolve(String(marker.installPath)) !== path.resolve(dir)) return false
-    if (countFilesRecursive(dir, 1) < 1) return false
-    if (process.platform === 'win32' && !findExecutableInDir(dir)) return false
-    return true
-  } catch {
-    return false
-  }
+  if (!dir) return false
+  return isValidFinalizedInstall({
+    downloadId: Number(download?.id),
+    gameUrl: download?.game_url,
+    installDir: dir,
+    hasPayload: countFilesRecursive(dir, 1) > 0,
+    hasExecutable: process.platform !== 'win32' || Boolean(findExecutableInDir(dir)),
+    requireWindowsExecutable: process.platform === 'win32'
+  })
 }
 
 export function hasExistingGameInstall(gameUrl: string, installPath?: string | null): boolean {
