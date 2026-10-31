@@ -614,9 +614,6 @@ export default function SettingsTab({ onDirtyChange }: SettingsTabProps = {}) {
               </button>
             </div>
           </div>
-
-
-          </div>
         </div>
       </div>
 
