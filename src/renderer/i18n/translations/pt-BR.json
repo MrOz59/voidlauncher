@@ -1029,5 +1029,6 @@
   "library.saves.customFolders": "Pastas configuradas manualmente",
   "library.saves.removeFolderHint": "Parar de monitorar esta pasta para o jogo. Nenhum arquivo será apagado.",
   "library.saves.history": "Atividade recente dos saves",
-  "library.saves.noHistory": "Nenhuma atividade de saves registrada para este jogo."
+  "library.saves.noHistory": "Nenhuma atividade de saves registrada para este jogo.",
+  "library.saves.manualSource": "Pasta de saves adicionada manualmente"
 }
