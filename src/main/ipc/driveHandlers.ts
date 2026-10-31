@@ -165,6 +165,35 @@ export const registerDriveHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => {
     }
   })
 
+  ipcMain.handle('cloud-saves-game-add-folder', async (_event, gameUrl: string) => {
+    try {
+      const options = gameSaveOptions(gameUrl)
+      const selected = await dialog.showOpenDialog({
+        title: 'Selecione a pasta específica dos saves deste jogo',
+        properties: ['openDirectory']
+      })
+      if (selected.canceled || !selected.filePaths?.[0]) return { success: true, canceled: true }
+      cloudSaves.addCustomSaveLocation(cloudSaves.computeCloudSavesGameKey(options), selected.filePaths[0])
+      return { success: true, message: 'Pasta de saves adicionada para este jogo.' }
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) }
+    }
+  })
+
+  ipcMain.handle('cloud-saves-game-remove-folder', async (_event, gameUrl: string, folder: string) => {
+    try {
+      const options = gameSaveOptions(gameUrl)
+      const gameKey = cloudSaves.computeCloudSavesGameKey(options)
+      if (typeof folder !== 'string' || !cloudSaves.getCustomSaveLocations(gameKey).includes(folder)) {
+        return { success: false, error: 'Esta pasta não está configurada para o jogo.' }
+      }
+      cloudSaves.removeCustomSaveLocation(gameKey, folder)
+      return { success: true, message: 'Pasta removida da detecção. Nenhum arquivo foi apagado.' }
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) }
+    }
+  })
+
   ipcMain.handle('cloud-saves-game-backup', async (_event, gameUrl: string) => {
     try {
       const options = gameSaveOptions(gameUrl)
