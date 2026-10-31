@@ -23,7 +23,18 @@ interface Settings {
   notificationsEnabled: boolean
 }
 
-type DriveFile = { id: string; name: string; modifiedTime?: string }
+type DriveFile = {
+  id: string
+  name: string
+  modifiedTime?: string
+  appProperties?: {
+    voidGameTitle?: string
+    voidFormat?: string
+    voidRole?: string
+    voidSaveMtime?: string
+    voidPlatform?: string
+  }
+}
 type SaveStatus = { state: 'idle' | 'pending' | 'saving' | 'saved' | 'error'; message: string }
 type LauncherDiagnosticCheck = { id: string; label: string; status: 'ok' | 'warn' | 'error' | 'info'; detail?: string }
 type LauncherDiagnostics = {
@@ -1029,8 +1040,27 @@ export default function SettingsTab({ onDirtyChange }: SettingsTabProps = {}) {
                 </div>
                 {driveFiles.map(f => (
                   <div key={f.id} className="settings-drive-list-item">
-                    <div className="settings-drive-file-name">{f.name}</div>
-                    <div className="settings-drive-file-date">{formatMaybeDate(f.modifiedTime)}</div>
+                    <div className="settings-drive-file-name">
+                      {f.appProperties?.voidGameTitle ? (
+                        <strong>{f.appProperties.voidGameTitle}</strong>
+                      ) : null}
+                      <div>{f.name}</div>
+                      {f.appProperties?.voidFormat ? (
+                        <small>
+                          {f.appProperties.voidFormat === 'heuristic-bundle' ? 'Backup heurístico' : 'Ludusavi'}
+                          {' • '}
+                          {f.appProperties.voidRole === 'conflict' ? 'Versão em conflito' : 'Principal'}
+                          {f.appProperties.voidPlatform ? ` • ${f.appProperties.voidPlatform}` : ''}
+                        </small>
+                      ) : (
+                        <small>Backup legado — formato não verificado</small>
+                      )}
+                    </div>
+                    <div className="settings-drive-file-date">
+                      {f.appProperties?.voidSaveMtime && Number(f.appProperties.voidSaveMtime) > 0
+                        ? formatMaybeDate(new Date(Number(f.appProperties.voidSaveMtime)).toISOString())
+                        : formatMaybeDate(f.modifiedTime)}
+                    </div>
                     <div>
                       <button className="settings-btn ghost sm" onClick={() => driveDownload(f.id, f.name)}>
                         <Download size={12} />
