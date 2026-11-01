@@ -6,6 +6,14 @@ import https from 'https'
 import os from 'os'
 import { assetNamesHostArch, assetRunsOnHost } from './utils/releaseAssets'
 
+/**
+ * Keep runtime support separate from the platform discriminant so TypeScript
+ * still typechecks cross-platform asset extraction below the guard.
+ */
+function legendaryEnabledOnHost(): boolean {
+  return process.platform !== 'win32'
+}
+
 export type LegendaryExecResult = {
   ok: boolean
   code?: number | null
@@ -334,7 +342,7 @@ async function resolveFromPath(): Promise<string | null> {
 export async function resolveLegendaryBinary(): Promise<string | null> {
   // Do not use previously downloaded or system Legendary binaries on Windows.
   // Epic's native launcher handles authentication and running Epic games.
-  if (process.platform === 'win32') return null
+  if (!legendaryEnabledOnHost()) return null
   const env = tryResolveBinaryFromEnv()
   if (env) return env
 
@@ -351,7 +359,7 @@ export async function ensureLegendaryAvailable(options?: {
   allowDownload?: boolean
   forceDownload?: boolean
 }): Promise<{ ok: boolean; path?: string; message?: string; downloaded?: boolean }> {
-  if (process.platform === 'win32') {
+  if (!legendaryEnabledOnHost()) {
     return { ok: false, message: 'Legendary não é necessário no Windows. Use o Epic Games Launcher nativo.' }
   }
   if (!process.versions?.electron) {
@@ -457,7 +465,7 @@ export async function ensureLegendaryAvailable(options?: {
 }
 
 export async function runLegendary(args: string[], opts?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): Promise<LegendaryExecResult> {
-  if (process.platform === 'win32') {
+  if (!legendaryEnabledOnHost()) {
     return { ok: false, code: null, stdout: '', stderr: 'Legendary desativado no Windows (use o Epic Games Launcher).' }
   }
   const bin = await resolveLegendaryBinary()
