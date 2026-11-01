@@ -131,12 +131,12 @@ export default function ToolsTab() {
     }
   }
 
-  const loadReleases = async (force = false, linuxPlatform = status?.isLinux === true) => {
+  const loadReleases = async (force = false, platform = status?.platform || 'win32') => {
     setReleaseLoading(true)
     try {
-      const keys: ToolKey[] = linuxPlatform
+      const keys: ToolKey[] = platform === 'linux'
         ? ['proton-ge', 'proton-cachyos', 'legendary', 'ludusavi']
-        : ['legendary', 'ludusavi']
+        : platform === 'win32' ? ['ludusavi'] : ['legendary', 'ludusavi']
       const errors: string[] = []
       const results = await Promise.all(keys.map(async key => {
         const res = await window.electronAPI.listToolReleases(key, 12, force)
@@ -155,13 +155,13 @@ export default function ToolsTab() {
   useEffect(() => {
     let mounted = true
     ;(async () => {
-      let linuxPlatform = false
+      let platform = 'win32'
       try {
         const res = await window.electronAPI.getToolsStatus()
         if (!mounted) return
         if (res.success) {
           setStatus(res.status || null)
-          linuxPlatform = res.status?.isLinux === true
+          platform = String(res.status?.platform || 'win32')
         } else {
           setMessage(ipcErrorText(t, res, t('tools.statusFailed')))
         }
@@ -170,7 +170,7 @@ export default function ToolsTab() {
       } finally {
         if (mounted) setLoading(false)
       }
-      if (mounted) await loadReleases(false, linuxPlatform)
+      if (mounted) await loadReleases(false, platform)
     })()
     return () => { mounted = false }
   }, [])
@@ -363,7 +363,7 @@ export default function ToolsTab() {
           <p>{t('tools.subtitle')}</p>
         </div>
         <div className="settings-btn-row">
-          <button className="settings-btn secondary" onClick={() => { loadStatus(); loadReleases(true, status?.isLinux === true) }} disabled={loading || releaseLoading || !!busy}>
+          <button className="settings-btn secondary" onClick={() => { loadStatus(); loadReleases(true, status?.platform || 'win32') }} disabled={loading || releaseLoading || !!busy}>
             <RefreshCw size={14} className={loading || releaseLoading ? 'of-spin' : ''} />
             {t('common.refresh')}
           </button>
@@ -468,6 +468,7 @@ export default function ToolsTab() {
         </div>
 
         <div className="tools-card-grid">
+          {status && status.platform !== 'win32' && (
           <div className="tool-card">
             <div className="tool-card-header">
               <div>
@@ -485,6 +486,7 @@ export default function ToolsTab() {
             {renderLegendaryAccount()}
             {renderReleaseList('legendary')}
           </div>
+          )}
 
           <div className="tool-card">
             <div className="tool-card-header">
