@@ -332,6 +332,9 @@ async function resolveFromPath(): Promise<string | null> {
 }
 
 export async function resolveLegendaryBinary(): Promise<string | null> {
+  // Do not use previously downloaded or system Legendary binaries on Windows.
+  // Epic's native launcher handles authentication and running Epic games.
+  if (process.platform === 'win32') return null
   const env = tryResolveBinaryFromEnv()
   if (env) return env
 
@@ -348,6 +351,9 @@ export async function ensureLegendaryAvailable(options?: {
   allowDownload?: boolean
   forceDownload?: boolean
 }): Promise<{ ok: boolean; path?: string; message?: string; downloaded?: boolean }> {
+  if (process.platform === 'win32') {
+    return { ok: false, message: 'Legendary não é necessário no Windows. Use o Epic Games Launcher nativo.' }
+  }
   if (!process.versions?.electron) {
     return { ok: false, message: 'Auto-download do Legendary requer runtime do Electron.' }
   }
@@ -451,6 +457,9 @@ export async function ensureLegendaryAvailable(options?: {
 }
 
 export async function runLegendary(args: string[], opts?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): Promise<LegendaryExecResult> {
+  if (process.platform === 'win32') {
+    return { ok: false, code: null, stdout: '', stderr: 'Legendary desativado no Windows (use o Epic Games Launcher).' }
+  }
   const bin = await resolveLegendaryBinary()
   if (!bin) {
     return { ok: false, code: null, stdout: '', stderr: 'Legendary não encontrado no PATH (instale `legendary` ou defina LEGENDARY_PATH).' }
