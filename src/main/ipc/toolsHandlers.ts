@@ -685,7 +685,7 @@ async function installProtonRuntime(provider: ProtonProvider, version: string): 
 }
 
 async function getToolsStatus() {
-  const legendaryPath = await resolveLegendaryBinary()
+  const legendaryPath = process.platform === 'win32' ? null : await resolveLegendaryBinary()
   const ludusaviPath = await resolveLudusaviBinary()
   const eosOverlayPath = isLinux() ? findEosOverlayInstallPath(app.getPath('userData')) : null
 
@@ -708,7 +708,9 @@ async function getToolsStatus() {
       winetricks: isLinux() ? winetricksAvailable() : false
     },
     tools: {
-      legendary: {
+      // Windows has a native Epic Games Launcher; no Legendary probes,
+      // authentication or managed binary are necessary on that platform.
+      legendary: process.platform === 'win32' ? undefined : {
         path: legendaryPath,
         version: await toolVersion('legendary', legendaryPath),
         managedVersion: readManagedVersion('legendary'),
@@ -787,6 +789,9 @@ export const registerToolsHandlers: IpcHandlerRegistrar = (_ctx: IpcContext) => 
       if (!['proton-ge', 'proton-cachyos', 'legendary', 'ludusavi', 'eos-overlay'].includes(tool)) {
         return { success: false, error: 'Ferramenta desconhecida.' }
       }
+      if (tool === 'legendary' && process.platform === 'win32') {
+        return { success: false, error: 'Legendary é desnecessário no Windows; use o Epic Games Launcher nativo.' }
+      }
       const result = await listGithubReleases(tool, Number(payload?.limit) || 12, { force: !!payload?.force })
       return { success: true, ...result }
     } catch (err: any) {
@@ -807,6 +812,9 @@ export const registerToolsHandlers: IpcHandlerRegistrar = (_ctx: IpcContext) => 
       }
 
       if (tool === 'legendary') {
+        if (process.platform === 'win32') {
+          return { success: false, error: 'Legendary não é instalado pelo VoidLauncher no Windows.' }
+        }
         const res = await ensureLegendaryAvailable({
           allowDownload: true,
           forceDownload: true,
@@ -845,6 +853,9 @@ export const registerToolsHandlers: IpcHandlerRegistrar = (_ctx: IpcContext) => 
 
   ipcMain.handle('tools-legendary-auth', async (_event, payload?: { action?: 'status' | 'login' | 'logout'; credential?: string }) => {
     try {
+      if (process.platform === 'win32') {
+        return { success: false, error: 'Use o Epic Games Launcher nativo para autenticação no Windows.' }
+      }
       const action = String(payload?.action || 'status').trim()
 
       if (action === 'status') {

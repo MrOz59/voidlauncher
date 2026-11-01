@@ -30,7 +30,7 @@
     "dist:appimage": "npm run fetch:easytier && npm run fetch:ludusavi && npm run fetch:legendary && npm run build:notification-overlay:linux && node scripts/patch-electron-builder.js && npm run build && electron-builder --linux appimage --publish never",
     "dist:rpm": "npm run fetch:easytier && npm run fetch:ludusavi && npm run fetch:legendary && npm run build:notification-overlay:linux && node scripts/patch-electron-builder.js && npm run build && electron-builder --linux rpm --publish never",
     "dist:pacman": "npm run fetch:easytier && npm run fetch:ludusavi && npm run fetch:legendary && npm run build:notification-overlay:linux && node scripts/patch-electron-builder.js && npm run build && electron-builder --linux pacman --publish never",
-    "dist:win": "node scripts/fetch-easytier.js --windows && npm run fetch:ludusavi && npm run fetch:legendary && npm run build:notification-overlay:windows && npm run build && electron-builder --win --publish never",
+    "dist:win": "node scripts/fetch-easytier.js --windows && npm run fetch:ludusavi && npm run build:notification-overlay:windows && npm run build && electron-builder --win --publish never",
     "start": "electron .",
     "test:scraper": "node scripts/test-scraper-dist.js",
     "test:store-parser": "tsc -p tsconfig.build.json && node scripts/test-store-parser.js",
@@ -155,13 +155,6 @@
         ]
       },
       {
-        "from": "vendor/legendary",
-        "to": "legendary",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
         "from": "notification-overlay/dist",
         "to": "void-toast",
         "filter": [
@@ -209,7 +202,16 @@
       "category": "Game",
       "maintainer": "Chaos Factory Team <contato@mroz.dev.br>",
       "icon": "icon.png",
-      "executableName": "voidlauncher"
+      "executableName": "voidlauncher",
+      "extraResources": [
+        {
+          "from": "vendor/legendary",
+          "to": "legendary",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     },
     "win": {
       "target": [
@@ -221,6 +223,17 @@
       "installerIcon": "icon.ico",
       "uninstallerIcon": "icon.ico",
       "installerHeaderIcon": "icon.ico"
+    },
+    "mac": {
+      "extraResources": [
+        {
+          "from": "vendor/legendary",
+          "to": "legendary",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     }
   }
 }
