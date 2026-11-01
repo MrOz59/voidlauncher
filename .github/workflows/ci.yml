@@ -29,6 +29,8 @@ jobs:
       # cx_Freeze/patchelf agent packaging step (tested by release workflows).
       - run: npm run build:app
       - run: npm run typecheck
+      - name: Verify platform-specific Legendary packaging
+        run: node --test scripts/test-platform-tools.js
       - name: Install integrity regression tests
         run: node --test scripts/test-install-finalization.js
       - name: Save backup integrity regression tests
@@ -53,6 +55,10 @@ jobs:
       - run: npm ci
       - run: npm run build:app
       - run: npm run typecheck
+      - name: Verify Windows Legendary exclusion
+        run: node --test scripts/test-platform-tools.js
+      - name: Check Legendary fetch is a no-op on Windows
+        run: node scripts/fetch-legendary.js
       - run: node --test scripts/test-install-finalization.js scripts/test-backup-integrity.js scripts/test-save-sync-policy.js scripts/test-save-bundles.js scripts/test-nested-saves.js
       - name: Compile native Windows toast (verifies border fix)
         run: npm run build:notification-overlay:windows
