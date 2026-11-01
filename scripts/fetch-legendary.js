@@ -253,6 +253,10 @@ function selectLegendaryAsset(assets, platform, arch) {
 
 async function main() {
   const platform = process.platform
+  if (platform === 'win32') {
+    console.log('[legendary] Skipping: Windows uses the native Epic Games Launcher.')
+    return
+  }
   const arch = process.arch
   const folder = `${platform}-${arch}`
   const exe = platform === 'win32' ? 'legendary.exe' : 'legendary'
