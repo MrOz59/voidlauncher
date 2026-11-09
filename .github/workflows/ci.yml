@@ -37,6 +37,8 @@ jobs:
         run: node --test scripts/test-backup-integrity.js
       - name: Cloud save conflict policy
         run: node --test scripts/test-save-sync-policy.js
+      - name: SHA-256 save content comparison
+        run: node --test scripts/test-save-content-fingerprint.js
       - name: Complete cloud save bundles
         run: node --test scripts/test-save-bundles.js
       - name: Nested game save directory round trip
@@ -59,6 +61,6 @@ jobs:
         run: node --test scripts/test-platform-tools.js
       - name: Check Legendary fetch is a no-op on Windows
         run: node scripts/fetch-legendary.js
-      - run: node --test scripts/test-install-finalization.js scripts/test-backup-integrity.js scripts/test-save-sync-policy.js scripts/test-save-bundles.js scripts/test-nested-saves.js
+      - run: node --test scripts/test-install-finalization.js scripts/test-backup-integrity.js scripts/test-save-sync-policy.js scripts/test-save-content-fingerprint.js scripts/test-save-bundles.js scripts/test-nested-saves.js
       - name: Compile native Windows toast (verifies border fix)
         run: npm run build:notification-overlay:windows
