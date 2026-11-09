@@ -1004,6 +1004,7 @@
   "library.saves.notConnected": "Conecte o Google Drive e ative Cloud Saves nas Configurações para ver os backups.",
   "library.saves.remoteOnly": "Nenhum save local encontrado. É possível restaurar um backup da nuvem.",
   "library.saves.localNewer": "Os saves locais são mais recentes e não serão sobrescritos automaticamente.",
+  "library.saves.inSync": "Os saves locais e do Google Drive têm conteúdo idêntico. Não é necessário restaurar nem enviar novamente.",
   "library.saves.conflict": "Existem saves locais e na nuvem com versões diferentes ou datas incertas. Escolha qual manter; a restauração exige confirmação.",
   "library.saves.empty": "Nenhuma restauração necessária.",
   "library.saves.localFound": "Saves locais detectados.",
