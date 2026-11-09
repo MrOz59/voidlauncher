@@ -267,7 +267,7 @@ export type GameSaveOverview = {
   }> }
   backups: GameSaveBackup[]
   customLocations: string[]
-  recommendation: 'restore' | 'local' | 'ask' | 'none'
+  recommendation: 'restore' | 'local' | 'ask' | 'none' | 'same'
 }
 
 async function listGameRemoteBackups(gameKey: string): Promise<GameSaveBackup[]> {
