@@ -96,6 +96,15 @@ export async function fingerprintLudusaviSnapshot(snapshotRoot: string): Promise
         .filter(item => item.isFile() && item.name.toLowerCase().endsWith('.zip'))
       if (!archives.length) return null
       const backupHashes: string[] = []
+      // Registry data can be stored beside the ZIPs. Include every other
+      // regular payload file except mapping.yaml (Ludusavi's metadata).
+      const sidecarFiles = (await fs.promises.readdir(gamePath, { withFileTypes: true }))
+        .filter(item => item.name !== 'mapping.yaml' && !item.name.toLowerCase().endsWith('.zip'))
+      for (const sidecar of sidecarFiles) {
+        if (!sidecar.isFile() || sidecar.isSymbolicLink()) return null
+        backupHashes.push(digestParts(['sidecar', sidecar.name,
+          await hashFile(path.join(gamePath, sidecar.name))]))
+      }
       for (const archive of archives) {
         const staging = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'void-save-compare-'))
         try {
