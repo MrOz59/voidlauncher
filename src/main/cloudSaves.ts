@@ -997,8 +997,11 @@ export async function syncCloudSavesManual(opts: CloudSaveSyncOptions): Promise<
   const restoreSkipped = Boolean((restore as any)?.skipped)
   const backupSkipped = Boolean((backup as any)?.skipped)
   if (restoreSkipped && backupSkipped) {
-    return { success: false, message: 'Ludusavi não encontrado; usando método legado.' }
+    return {
+      success: true,
+      message: backup.message || restore.message || 'Saves já sincronizados; nenhuma transferência necessária.'
+    }
   }
 
-  return { success: true }
+  return { success: true, message: backup.message || restore.message }
 }
