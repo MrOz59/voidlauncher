@@ -144,7 +144,9 @@ jobs:
           cache: npm
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.9'  # Same as Hydra Launcher
+          # Python 3.9 is unavailable on Ubuntu 26.04 (ubuntu-latest).
+          # Keep Linux Nightly aligned with the Release workflow.
+          python-version: '3.11'
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo
         uses: actions/cache@v4
