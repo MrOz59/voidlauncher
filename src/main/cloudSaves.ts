@@ -987,6 +987,7 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
 }
 
 export async function syncCloudSavesManual(opts: CloudSaveSyncOptions): Promise<{ success: boolean; message?: string }> {
+  if (!drive.isCloudSavesEnabled()) return { success: false, message: 'Cloud Saves desabilitado.' }
   const restore = await restoreCloudSavesBeforeLaunch(opts)
   if (!restore.success) return { success: false, message: restore.message }
 
