@@ -96,7 +96,9 @@ export const registerDriveHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => {
         steamAppId: (options?.steamAppId || game?.steam_app_id || null) as any,
         protonPrefix: (options?.protonPrefix || game?.proton_prefix || null) as any
       })
-      if (res?.success && !(res as any)?.skipped) return { success: true }
+      // An intentionally skipped backup is already a successful decision:
+      // never turn "identical saves" into a second legacy upload.
+      if (res?.success) return { success: true, skipped: res.skipped, message: res.message }
 
       // Fallback: legacy OnlineFix folder backup
       return await drive.backupLocalSavesToDrive(options || {})
