@@ -1004,6 +1004,7 @@
   "library.saves.notConnected": "Connect Google Drive and enable Cloud Saves in Settings to view remote backups.",
   "library.saves.remoteOnly": "No local saves found. A cloud backup can be restored safely.",
   "library.saves.localNewer": "Local saves are newer. They will not be overwritten automatically.",
+  "library.saves.inSync": "Local and Google Drive saves have identical contents. No restore or upload is needed.",
   "library.saves.conflict": "Local and cloud saves differ or have uncertain timestamps. Choose which version to keep; restoring requires confirmation.",
   "library.saves.empty": "No restore needed.",
   "library.saves.localFound": "Local saves were detected.",

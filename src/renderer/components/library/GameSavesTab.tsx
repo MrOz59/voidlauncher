@@ -30,7 +30,7 @@ type Overview = {
   local: { exists: boolean; modifiedMs: number | null; locations: LocalLocation[] }
   backups: SaveBackup[]
   customLocations: string[]
-  recommendation: 'restore' | 'local' | 'ask' | 'none'
+  recommendation: 'restore' | 'local' | 'ask' | 'none' | 'same'
 }
 
 function displayTime(timestamp: number | null | undefined, fallback?: string) {
@@ -92,6 +92,7 @@ export function GameSavesTab({ game }: { game: Game }) {
   const summary = !data ? '' : !data.connected ? t('library.saves.notConnected')
     : data.recommendation === 'restore' ? t('library.saves.remoteOnly')
     : data.recommendation === 'local' ? t('library.saves.localNewer')
+    : data.recommendation === 'same' ? t('library.saves.inSync')
     : data.recommendation === 'ask' ? t('library.saves.conflict')
     : t('library.saves.empty')
 

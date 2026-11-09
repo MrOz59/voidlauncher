@@ -1206,7 +1206,7 @@ export const registerLaunchHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => 
               steamAppId: game.steam_app_id || null,
               protonPrefix: prefixPath || game.proton_prefix || null
             })
-            if (!backupRes?.success || (backupRes as any)?.skipped) {
+            if (!backupRes?.success) {
               console.warn('[CloudSaves] backup reported non-success:', backupRes)
               const msg = String(backupRes?.message || 'Falha ao salvar com Ludusavi; usando método legado.')
               recordCloudSaves({ at: Date.now(), gameKey, gameUrl, stage: 'backup', level: 'warning', message: msg })
@@ -1220,11 +1220,13 @@ export const registerLaunchHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => 
                 sendCloudSavesStatus({ at: Date.now(), gameUrl, gameKey, stage: 'backup', level: 'success', message: 'Backup na nuvem atualizado (método legado).' })
               }
             }
-            if (backupRes?.success && !(backupRes as any)?.skipped) {
+            if (backupRes?.success) {
               const isConflict = /conflito/i.test(String(backupRes?.message || ''))
+              const skipped = Boolean(backupRes.skipped)
               const msg = String(backupRes?.message || 'Backup na nuvem atualizado.')
-              recordCloudSaves({ at: Date.now(), gameKey, gameUrl, stage: 'backup', level: isConflict ? 'warning' : 'success', message: msg })
-              sendCloudSavesStatus({ at: Date.now(), gameUrl, gameKey, stage: 'backup', level: isConflict ? 'warning' : 'success', message: msg, conflict: isConflict })
+              const level = skipped ? 'info' : isConflict ? 'warning' : 'success'
+              recordCloudSaves({ at: Date.now(), gameKey, gameUrl, stage: 'backup', level, message: msg })
+              sendCloudSavesStatus({ at: Date.now(), gameUrl, gameKey, stage: 'backup', level, message: msg, conflict: isConflict })
             }
             console.log('[CloudSaves] Backup finished (Proton/Linux).')
           } catch (e: any) {
@@ -1337,7 +1339,7 @@ export const registerLaunchHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => 
               steamAppId: game.steam_app_id || null,
               protonPrefix: game.proton_prefix || null
             })
-            if (!backupRes?.success || (backupRes as any)?.skipped) {
+            if (!backupRes?.success) {
               console.warn('[CloudSaves] backup reported non-success:', backupRes)
               const msg = String(backupRes?.message || 'Falha ao salvar com Ludusavi; usando método legado.')
               recordCloudSaves({ at: Date.now(), gameKey, gameUrl, stage: 'backup', level: 'warning', message: msg })
@@ -1351,11 +1353,13 @@ export const registerLaunchHandlers: IpcHandlerRegistrar = (ctx: IpcContext) => 
                 sendCloudSavesStatus({ at: Date.now(), gameUrl, gameKey, stage: 'backup', level: 'success', message: 'Backup na nuvem atualizado (método legado).' })
               }
             }
-            if (backupRes?.success && !(backupRes as any)?.skipped) {
+            if (backupRes?.success) {
               const isConflict = /conflito/i.test(String(backupRes?.message || ''))
+              const skipped = Boolean(backupRes.skipped)
               const msg = String(backupRes?.message || 'Backup na nuvem atualizado.')
-              recordCloudSaves({ at: Date.now(), gameKey, gameUrl, stage: 'backup', level: isConflict ? 'warning' : 'success', message: msg })
-              sendCloudSavesStatus({ at: Date.now(), gameUrl, gameKey, stage: 'backup', level: isConflict ? 'warning' : 'success', message: msg, conflict: isConflict })
+              const level = skipped ? 'info' : isConflict ? 'warning' : 'success'
+              recordCloudSaves({ at: Date.now(), gameKey, gameUrl, stage: 'backup', level, message: msg })
+              sendCloudSavesStatus({ at: Date.now(), gameUrl, gameKey, stage: 'backup', level, message: msg, conflict: isConflict })
             }
           } catch (e: any) {
             console.warn('[CloudSaves] Failed to backup saves after exit:', e?.message || e)

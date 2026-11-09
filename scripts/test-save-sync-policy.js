@@ -30,3 +30,10 @@ test('a missing remote backup never triggers restore', () => {
 test('close timestamps require explicit choice, not blind replacement', () => {
   assert.equal(chooseSafeSaveAction(snapshot(true, 50000), snapshot(true, 50100)), 'ask')
 })
+
+test('verified identical contents bypass the false conflict without trusting timestamps', () => {
+  assert.equal(chooseSafeSaveAction(snapshot(true, 5000), snapshot(true, 5000), true), 'same')
+  assert.equal(chooseSafeSaveAction(snapshot(true), snapshot(true), true), 'same')
+  assert.equal(chooseSafeSaveAction(snapshot(true, 5000), snapshot(true, 5000), false), 'ask')
+  assert.equal(chooseSafeSaveAction(snapshot(false), snapshot(true, 5000), true), 'restore')
+})

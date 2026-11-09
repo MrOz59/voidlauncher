@@ -1,4 +1,4 @@
-export type SaveSyncChoice = 'restore' | 'local' | 'ask' | 'none'
+export type SaveSyncChoice = 'restore' | 'local' | 'ask' | 'none' | 'same'
 export type SaveSnapshot = { exists: boolean; modifiedMs: number | null }
 export const SAVE_TIMESTAMP_TOLERANCE_MS = 30_000
 
@@ -9,10 +9,12 @@ export const SAVE_TIMESTAMP_TOLERANCE_MS = 30_000
  */
 export function chooseSafeSaveAction(
   local: SaveSnapshot,
-  remote: SaveSnapshot
+  remote: SaveSnapshot,
+  contentIdentical = false
 ): SaveSyncChoice {
   if (!remote.exists) return local.exists ? 'local' : 'none'
   if (!local.exists) return 'restore'
+  if (contentIdentical) return 'same' // Only a verified content fingerprint proves equality.
   if (local.modifiedMs == null || remote.modifiedMs == null) return 'ask'
   if (local.modifiedMs > remote.modifiedMs + SAVE_TIMESTAMP_TOLERANCE_MS) return 'local'
   if (remote.modifiedMs > local.modifiedMs + SAVE_TIMESTAMP_TOLERANCE_MS) return 'ask'

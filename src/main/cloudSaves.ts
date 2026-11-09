@@ -16,7 +16,11 @@ import {
 import { detectSaveLocationsAsync, DetectedSaveLocation } from './saveDetector'
 import { getGame, getSetting, setSetting } from './db'
 import { isValidBackupZip, safeRemoteZipFilename } from './backupIntegrity'
-import { chooseSafeSaveAction } from './saveSyncPolicy'
+import { chooseSafeSaveAction, SAVE_TIMESTAMP_TOLERANCE_MS } from './saveSyncPolicy'
+import {
+  SAVE_CONTENT_FINGERPRINT_VERSION, fingerprintSaveRoots,
+  fingerprintLudusaviSnapshot, fingerprintExtractedSaveBundle
+} from './saveContentFingerprint'
 import { makeSaveBundle, unpackSaveBundle, hasLudusaviMapping } from './saveBundles'
 
 function slugify(text: string) {
@@ -251,6 +255,8 @@ export type GameSaveBackup = {
   role: 'main' | 'conflict' | 'legacy'
   platform?: string
   restorable: boolean
+  contentHash?: string
+  contentHashVersion?: string
 }
 
 export type GameSaveOverview = {
@@ -261,7 +267,7 @@ export type GameSaveOverview = {
   }> }
   backups: GameSaveBackup[]
   customLocations: string[]
-  recommendation: 'restore' | 'local' | 'ask' | 'none'
+  recommendation: 'restore' | 'local' | 'ask' | 'none' | 'same'
 }
 
 async function listGameRemoteBackups(gameKey: string): Promise<GameSaveBackup[]> {
@@ -296,7 +302,9 @@ async function listGameRemoteBackups(gameKey: string): Promise<GameSaveBackup[]>
     return {
       id: f.id, name: f.name, modifiedTime: f.modifiedTime,
       saveModifiedMs: Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null,
-      format, role, platform, restorable
+      format, role, platform, restorable,
+      contentHash: props.voidContentHash,
+      contentHashVersion: props.voidContentHashVersion
     }
   }).sort((a, b) => (b.saveModifiedMs || Date.parse(b.modifiedTime || '') || 0) -
     (a.saveModifiedMs || Date.parse(a.modifiedTime || '') || 0))
@@ -316,6 +324,19 @@ export async function getGameSaveOverview(opts: CloudSaveSyncOptions): Promise<G
   const connected = drive.isCloudSavesEnabled()
   const backups = connected ? await listGameRemoteBackups(gameKey) : []
   const newest = backups.find(b => b.restorable && b.role === 'main')
+  const matchingRemote: RemoteCloudSave | null = newest ? {
+    id: newest.id, name: newest.name, modifiedTime: newest.modifiedTime,
+    appProperties: {
+      voidGameKey: gameKey, voidRole: newest.role, voidSchema: '2',
+      voidFormat: newest.format, voidPlatform: newest.platform || '',
+      voidSaveMtime: newest.saveModifiedMs ? String(newest.saveModifiedMs) : '',
+      voidContentHash: newest.contentHash || '',
+      voidContentHashVersion: newest.contentHashVersion || ''
+    }
+  } : null
+  const identical = matchingRemote && local.exists
+    ? await areSavesIdentical(matchingRemote, gameKey, local, configDir, gameName, winePrefix)
+    : false
   return {
     gameKey, connected,
     local: {
@@ -331,7 +352,8 @@ export async function getGameSaveOverview(opts: CloudSaveSyncOptions): Promise<G
     customLocations: getCustomSaveLocations(gameKey),
     recommendation: chooseSafeSaveAction(
       { exists: local.exists, modifiedMs: local.modifiedMs },
-      { exists: !!newest, modifiedMs: newest?.saveModifiedMs || null }
+      { exists: !!newest, modifiedMs: newest?.saveModifiedMs || null },
+      identical
     )
   }
 }
@@ -479,6 +501,104 @@ async function inspectLocalSaves(
 }
 
 
+/** Only the same roots that a heuristic backup actually archives count. */
+function heuristicSaveRoots(local: LocalSaveSnapshot): string[] {
+  return local.locations
+    .filter(loc => (loc.confidence === 'high' || loc.confidence === 'medium') && locationContainsSaves(loc))
+    .map(loc => loc.path)
+}
+
+async function fingerprintCurrentSaves(
+  format: string,
+  local: LocalSaveSnapshot,
+  configDir: string,
+  gameName: string | null,
+  winePrefix: string | undefined
+): Promise<string | null> {
+  if (!local.exists) return null
+  if (format === 'heuristic-bundle') return fingerprintSaveRoots(heuristicSaveRoots(local))
+  if (format !== 'ludusavi-bundle' || !gameName || !(await resolveLudusaviBinary())) return null
+  const root = fs.mkdtempSync(path.join(app.getPath('temp'), 'void-save-local-check-'))
+  try {
+    const backup = await ludusaviBackupOne({ configDir, backupDir: root, gameName, winePrefix })
+    return backup.ok && hasLudusaviMapping(root)
+      ? await fingerprintLudusaviSnapshot(root) : null
+  } catch (err) {
+    console.warn('[CloudSaves] Local Ludusavi comparison failed:', err)
+    return null
+  } finally {
+    try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
+  }
+}
+
+/** Inspect actual contents of a v2 backup, without restoring anything. */
+async function fingerprintBundleArchive(
+  zipPath: string, gameKey: string, format: string
+): Promise<string | null> {
+  const root = fs.mkdtempSync(path.join(app.getPath('temp'), 'void-save-bundle-check-'))
+  try {
+    const manifest = await unpackSaveBundle(zipPath, root)
+    return await fingerprintExtractedSaveBundle(root, manifest, {
+      gameKey, format, platform: process.platform
+    })
+  } catch (err) {
+    console.warn('[CloudSaves] Could not inspect save bundle for equality:', err)
+    return null
+  } finally {
+    try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
+  }
+}
+
+/**
+ * Equality is established by file contents, NEVER matching dates alone.
+ * Old v2 backups have no fingerprint: inspect their archive on demand when
+ * their save times are close, so existing users also avoid false conflicts.
+ * On any error, comparison is inconclusive and the safe conflict policy wins.
+ */
+async function areSavesIdentical(
+  remote: RemoteCloudSave,
+  gameKey: string,
+  local: LocalSaveSnapshot,
+  configDir: string,
+  gameName: string | null,
+  winePrefix: string | undefined
+): Promise<boolean> {
+  if (!local.exists) return false
+  const props = remote.appProperties || {}
+  const format = String(props.voidFormat || '')
+  if (props.voidSchema !== '2' || props.voidGameKey !== gameKey ||
+      props.voidPlatform !== process.platform ||
+      (format !== 'ludusavi-bundle' && format !== 'heuristic-bundle')) return false
+
+  const knownHash = String(props.voidContentHash || '')
+  const hasFingerprint = props.voidContentHashVersion === SAVE_CONTENT_FINGERPRINT_VERSION &&
+    /^[a-f0-9]{64}$/.test(knownHash)
+  const remoteTimestamp = Number(props.voidSaveMtime)
+  if (!hasFingerprint && (!local.modifiedMs || !Number.isFinite(remoteTimestamp) ||
+      remoteTimestamp <= 0 ||
+      Math.abs(local.modifiedMs - remoteTimestamp) > SAVE_TIMESTAMP_TOLERANCE_MS)) return false
+
+  const localHash = await fingerprintCurrentSaves(format, local, configDir, gameName, winePrefix)
+  if (!localHash) return false
+  if (hasFingerprint) return knownHash === localHash
+
+  const safeName = safeRemoteZipFilename(remote.name)
+  if (!safeName) return false
+  const stage = fs.mkdtempSync(path.join(app.getPath('temp'), 'void-save-remote-check-'))
+  try {
+    const remoteZip = path.join(stage, safeName)
+    const result = await drive.downloadSave(remote.id, remoteZip)
+    if (!result.success) return false
+    const remoteHash = await fingerprintBundleArchive(remoteZip, gameKey, format)
+    return !!remoteHash && remoteHash === localHash
+  } catch (err) {
+    console.warn('[CloudSaves] Remote save comparison failed:', err)
+    return false
+  } finally {
+    try { fs.rmSync(stage, { recursive: true, force: true }) } catch {}
+  }
+}
+
 /**
  * Create a zip backup of detected save locations using system zip command
  */
@@ -618,7 +738,9 @@ export async function restoreCloudSavesBeforeLaunch(
       appProperties: {
         voidGameKey: gameKey, voidRole: selected.role, voidFormat: selected.format,
         voidPlatform: selected.platform || '', voidSchema: '2',
-        voidSaveMtime: selected.saveModifiedMs ? String(selected.saveModifiedMs) : ''
+        voidSaveMtime: selected.saveModifiedMs ? String(selected.saveModifiedMs) : '',
+        voidContentHash: selected.contentHash || '',
+        voidContentHashVersion: selected.contentHashVersion || ''
       } }
   }
   if (!remote) return { success: true, skipped: true, message: 'Nenhum backup remoto encontrado.' }
@@ -633,10 +755,15 @@ export async function restoreCloudSavesBeforeLaunch(
   const props = remote.appProperties || {}
   const remoteTimestamp = Number(props.voidSaveMtime)
   const remoteSaveMs = Number.isFinite(remoteTimestamp) && remoteTimestamp > 0 ? remoteTimestamp : null
-  const action = selectedRemoteId && local.exists ? 'ask' : chooseSafeSaveAction(
+  const identical = await areSavesIdentical(remote, gameKey, local, configDir, name, winePrefix)
+  const action = selectedRemoteId && local.exists && !identical ? 'ask' : chooseSafeSaveAction(
     { exists: local.exists, modifiedMs: local.modifiedMs },
-    { exists: true, modifiedMs: remoteSaveMs }
+    { exists: true, modifiedMs: remoteSaveMs },
+    identical
   )
+  if (action === 'same') {
+    return { success: true, skipped: true, message: 'Saves locais e do Drive são idênticos; restauração desnecessária.' }
+  }
   if (action === 'local' || action === 'none') {
     return { success: true, skipped: true, message: 'Save local preservado; não houve sobrescrita.' }
   }
@@ -655,7 +782,7 @@ export async function restoreCloudSavesBeforeLaunch(
       type: 'warning',
       title: 'Conflito de saves - VoidLauncher',
       message: `Foram encontrados saves locais e no Drive para ${opts.title || gameKey}.`,
-      detail: `Local: ${readable(local.modifiedMs)}\nDrive: ${readable(remoteSaveMs)}\n\nRestaurar do Drive irá substituir arquivos locais. O launcher criará uma cópia de segurança primeiro.`,
+      detail: `Local: ${readable(local.modifiedMs)}\nDrive: ${readable(remoteSaveMs)}\n\nNão foi possível comprovar que os conteúdos são iguais. Datas iguais, por si só, não garantem saves idênticos.\n\nRestaurar do Drive irá substituir arquivos locais. O launcher criará uma cópia de segurança primeiro.`,
       buttons: ['Manter saves locais', 'Restaurar do Drive', 'Cancelar'],
       defaultId: 0, cancelId: 2, noLink: true
     })
@@ -739,12 +866,18 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
   }) : null
   const local = await inspectLocalSaves(opts, configDir, backupDir, resolvedName, winePrefix)
   const remote = await getNewestRemoteForGameKey(gameKey)
+  if (remote && await areSavesIdentical(remote, gameKey, local, configDir, resolvedName, winePrefix)) {
+    return { success: true, skipped: true, message: 'Saves já sincronizados; nenhum backup duplicado foi enviado.' }
+  }
   const remoteSaveAt = Number(remote?.appProperties?.voidSaveMtime || 0)
-  const remoteIsNewer = !!remote && (
+  // Equal or uncertain timestamps with DIFFERENT/UNVERIFIED contents must
+  // preserve the remote main backup instead of silently replacing it.
+  const protectRemote = !!remote && (
     !local.modifiedMs || !Number.isFinite(remoteSaveAt) || remoteSaveAt <= 0 ||
-    remoteSaveAt > local.modifiedMs + 30_000
+    remoteSaveAt >= local.modifiedMs - SAVE_TIMESTAMP_TOLERANCE_MS
   )
 
+  let contentFingerprint: string | null = null
   let zipPath: string | null = null
   let usedHeuristic = false
 
@@ -757,6 +890,7 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
         configDir, backupDir: snapshotRoot, gameName: resolvedName, winePrefix
       })
       if (result.ok && hasLudusaviMapping(snapshotRoot)) {
+        contentFingerprint = await fingerprintLudusaviSnapshot(snapshotRoot)
         const filename = `bundle_${Date.now()}.zip`
         zipPath = await makeSaveBundle(snapshotRoot, path.join(backupDir, filename), {
           version: 2,
@@ -789,6 +923,11 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
       if (heuristicResult.success && heuristicResult.zipPath) {
         zipPath = heuristicResult.zipPath
         usedHeuristic = true
+        // Hash the actual archive and require it to match the current roots.
+        // If the game wrote files during backup, do not claim equality later.
+        const liveHash = await fingerprintSaveRoots(heuristicSaveRoots(local))
+        const archivedHash = await fingerprintBundleArchive(zipPath, gameKey, 'heuristic-bundle')
+        contentFingerprint = liveHash && liveHash === archivedHash ? liveHash : null
       } else {
         heuristicError = heuristicResult.message || 'Falha ao empacotar os arquivos de saves.'
       }
@@ -807,10 +946,10 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-')
   const format = usedHeuristic ? 'heuristic-bundle' : 'ludusavi-bundle'
-  const role = remoteIsNewer ? 'conflict' : 'main'
+  const role = protectRemote ? 'conflict' : 'main'
   const prefix = usedHeuristic
-    ? (remoteIsNewer ? `heuristic_${gameKey}__conflict_` : remoteHeuristicPrefixForGame(gameKey))
-    : (remoteIsNewer ? remoteConflictPrefixForGame(gameKey) : remotePrefixForGame(gameKey))
+    ? (protectRemote ? `heuristic_${gameKey}__conflict_` : remoteHeuristicPrefixForGame(gameKey))
+    : (protectRemote ? remoteConflictPrefixForGame(gameKey) : remotePrefixForGame(gameKey))
   const remoteName = `${prefix}${ts}.zip`
   const metadata = {
     voidGameKey: gameKey,
@@ -819,6 +958,8 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
     voidFormat: format,
     voidRole: role,
     voidSaveMtime: local.modifiedMs ? String(local.modifiedMs) : '',
+    voidContentHash: contentFingerprint || '',
+    voidContentHashVersion: contentFingerprint ? SAVE_CONTENT_FINGERPRINT_VERSION : '',
     voidPlatform: process.platform,
     voidSchema: '2'
   }
@@ -839,13 +980,14 @@ export async function backupCloudSavesAfterExit(opts: CloudSaveSyncOptions): Pro
   const methodUsed = usedHeuristic ? 'heurística' : 'Ludusavi'
   return {
     success: true, fileId: up.id,
-    message: remoteIsNewer
-      ? `Saves remotos mais novos; backup local via ${methodUsed} preservado separadamente como conflito.`
+    message: protectRemote
+      ? `Saves remotos diferentes ou não verificáveis; backup local via ${methodUsed} preservado separadamente como conflito.`
       : `Backup realizado via ${methodUsed}.`
   }
 }
 
 export async function syncCloudSavesManual(opts: CloudSaveSyncOptions): Promise<{ success: boolean; message?: string }> {
+  if (!drive.isCloudSavesEnabled()) return { success: false, message: 'Cloud Saves desabilitado.' }
   const restore = await restoreCloudSavesBeforeLaunch(opts)
   if (!restore.success) return { success: false, message: restore.message }
 
@@ -856,8 +998,11 @@ export async function syncCloudSavesManual(opts: CloudSaveSyncOptions): Promise<
   const restoreSkipped = Boolean((restore as any)?.skipped)
   const backupSkipped = Boolean((backup as any)?.skipped)
   if (restoreSkipped && backupSkipped) {
-    return { success: false, message: 'Ludusavi não encontrado; usando método legado.' }
+    return {
+      success: true,
+      message: backup.message || restore.message || 'Saves já sincronizados; nenhuma transferência necessária.'
+    }
   }
 
-  return { success: true }
+  return { success: true, message: backup.message || restore.message }
 }
