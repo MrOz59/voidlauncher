@@ -144,7 +144,9 @@ jobs:
           cache: npm
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.9'  # Same as Hydra Launcher
+          # Python 3.9 has no Ubuntu 26.04 runner build.
+          # Match the stable release workflow's Python version.
+          python-version: '3.11'
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo
         uses: actions/cache@v4
