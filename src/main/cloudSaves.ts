@@ -782,7 +782,7 @@ export async function restoreCloudSavesBeforeLaunch(
       type: 'warning',
       title: 'Conflito de saves - VoidLauncher',
       message: `Foram encontrados saves locais e no Drive para ${opts.title || gameKey}.`,
-      detail: `Local: ${readable(local.modifiedMs)}\nDrive: ${readable(remoteSaveMs)}\n\nRestaurar do Drive irá substituir arquivos locais. O launcher criará uma cópia de segurança primeiro.`,
+      detail: `Local: ${readable(local.modifiedMs)}\nDrive: ${readable(remoteSaveMs)}\n\nNão foi possível comprovar que os conteúdos são iguais. Datas iguais, por si só, não garantem saves idênticos.\n\nRestaurar do Drive irá substituir arquivos locais. O launcher criará uma cópia de segurança primeiro.`,
       buttons: ['Manter saves locais', 'Restaurar do Drive', 'Cancelar'],
       defaultId: 0, cancelId: 2, noLink: true
     })
